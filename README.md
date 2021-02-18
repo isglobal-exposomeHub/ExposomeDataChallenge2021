@@ -14,7 +14,7 @@ These are the availalbe datasets to propose data analyses to address any challen
 The three tables can be linked using **ID** variable. See the [codebook](https://github.com/isglobal-brge/brgedata/blob/master/data/ExposomeDataChallenge2021/codebook.xlsx) for variable description (variable name, domain, type of variable, transformation, ...)
 
 
-- **omic data**: ExpressionSet objects for:
+- **omic data**: ExpressionSet objects (see [here](https://isglobal-brge.github.io/Master_Bioinformatics/bioconductor.html#expressionset) what an ExpressionSet is) :
      - gene expression (n=1007)
      - methylation (n=
 
