@@ -6,12 +6,12 @@ The objective of this event (described [here](https://www.isglobal.org/-/exposom
 
 Basically we have:
 
-- **Exposome data**:  Rdata file without missings and with missings having three objects:
+- **Exposome data**:  Rdata file [without missings](https://github.com/isglobal-brge/brgedata/blob/master/data/ExposomeDataChallenge2021/exposome.RData) and [with missings](https://github.com/isglobal-brge/brgedata/blob/master/data/ExposomeDataChallenge2021/exposome_NA.RData) containing three objects:
      - 1 dataset for exposures: exposome
      - 1 dataset for covariates: covariates
      - 1 dataset for outcomes: phenotype
 
-The three tables can be linked using **ID** variable. 
+The three tables can be linked using **ID** variable. See the [codebook](https://github.com/isglobal-brge/brgedata/blob/master/data/ExposomeDataChallenge2021/codebook.xlsx) for variable description (variable name, domain, type of variable, transformation, ...)
 
 
 - **omic data**: ExpressionSet objects for:
