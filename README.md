@@ -21,10 +21,10 @@ The three tables can be linked using **ID** variable. See the [codebook](https:/
 Exposome and omic data can be linked using **ID** variable. 
 
 The variables that are available in the metadata are:
-     1. ID: identification number
-     2. e3_sex: gender (male, female)
-     3. age_sample_years: age (in years)
-     4. h_ethnicity_cauc: caucasic? (yes, no)
-     5. ethn_PC1: first PCA to address population stratification
-     6. ethn_PC2: second PCA to address population stratification
-     7. Cell-type estimates: NK_6, Bcell_6, CD4T_6, CD8T_6, Gran_6, Mono_6
+> 1. ID: identification number
+> 2. e3_sex: gender (male, female)
+> 3. age_sample_years: age (in years)
+> 4. h_ethnicity_cauc: caucasic? (yes, no)
+> 5. ethn_PC1: first PCA to address population stratification
+> 6. ethn_PC2: second PCA to address population stratification
+> 7. Cell-type estimates: NK_6, Bcell_6, CD4T_6, CD8T_6, Gran_6, Mono_6
