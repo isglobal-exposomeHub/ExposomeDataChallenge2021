@@ -14,11 +14,9 @@ These are the availalbe datasets to propose data analyses to address any challen
 The three tables can be linked using **ID** variable. See the [codebook](https://github.com/isglobal-brge/brgedata/blob/master/data/ExposomeDataChallenge2021/codebook.xlsx) for variable description (variable name, domain, type of variable, transformation, ...)
 
 
-- **omic data**: ExpressionSet objects (see [here](https://isglobal-brge.github.io/Master_Bioinformatics/bioconductor.html#expressionset) what an ExpressionSet is) :
-     - gene expression (n=1007)
-     - methylation (n=
-
-Exposome and omic data can be linked using **ID** variable. 
+- **omic data**: Exposome and omic data can be linked using **ID** variable. 
+     - gene expression: ExpressionSet  (see [here](https://isglobal-brge.github.io/Master_Bioinformatics/bioconductor.html#expressionset) what an ExpressionSet is) of **1007 samples** and **28,738 transcripts* with annotated gene symbols. 
+     - methylation: GenomicRatioSet of **918 samples** and **386,518 CpGs**
 
 The variables that are available in the metadata are:
 > 1. **ID**: identification number
