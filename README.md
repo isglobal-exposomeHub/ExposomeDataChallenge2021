@@ -6,7 +6,7 @@ The objective of this event (described [here](https://www.isglobal.org/-/exposom
 
 These are the availalbe datasets to propose data analyses to address any challenge:
 
-- **Exposome data**:  Rdata file [without missings](https://github.com/isglobal-brge/brgedata/blob/master/data/ExposomeDataChallenge2021/exposome.RData) and [with missings](https://github.com/isglobal-brge/brgedata/blob/master/data/ExposomeDataChallenge2021/exposome_NA.RData) containing three objects:
+- **Exposome data (n=1301)**:  Rdata file [without missings](https://github.com/isglobal-brge/brgedata/blob/master/data/ExposomeDataChallenge2021/exposome.RData) and [with missings](https://github.com/isglobal-brge/brgedata/blob/master/data/ExposomeDataChallenge2021/exposome_NA.RData) containing three objects:
      - 1 dataset for exposures: exposome
      - 1 dataset for covariates: covariates
      - 1 dataset for outcomes: phenotype
@@ -15,8 +15,8 @@ The three tables can be linked using **ID** variable. See the [codebook](https:/
 
 
 - **omic data**: ExpressionSet objects for:
-     - gene expression
-     - methylation
+     - gene expression (n=1007)
+     - methylation (n=
 
 Exposome and omic data can be linked using **ID** variable. 
 
