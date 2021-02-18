@@ -15,8 +15,8 @@ The three tables can be linked using **ID** variable. See the [codebook](https:/
 
 
 - **omic data**: Exposome and omic data can be linked using **ID** variable. 
-     - gene expression: ExpressionSet  (see [here](https://isglobal-brge.github.io/Master_Bioinformatics/bioconductor.html#expressionset) what an ExpressionSet is) of **1007 individuals** and **28,738 transcripts** with annotated gene symbols. 
-     - methylation: GenomicRatioSet of **918 individuals** and **386,518 CpGs**
+     - Gene expression: ExpressionSet called `genexpr`  (see [here](https://isglobal-brge.github.io/Master_Bioinformatics/bioconductor.html#expressionset) what an ExpressionSet is) of **1007 individuals** and **28,738 transcripts** with annotated gene symbols. 
+     - Methylation: GenomicRatioSet called `methy` (see [here](https://www.rdocumentation.org/packages/minfi/versions/1.18.4/topics/GenomicRatioSet-class) of **918 individuals** and **386,518 CpGs**
 
 The variables that are available in the metadata are:
 > 1. **ID**: identification number
