@@ -19,6 +19,7 @@ The three tables can be linked using **ID** variable. See the [codebook](https:/
      - [Methylation](https://figshare.com/s/46e6a1d66ff135bb15c8): GenomicRatioSet called `methy` (see [here](https://www.rdocumentation.org/packages/minfi/versions/1.18.4/topics/GenomicRatioSet-class) what a GenomicRatioSet is) of **918 individuals** and **386,518 CpGs**
 
 The variables that are available in the metadata are:
+
 > 1. **ID**: identification number
 > 2. **e3_sex**: gender (male, female)
 > 3. **age_sample_years**: age (in years)
@@ -26,3 +27,7 @@ The variables that are available in the metadata are:
 > 5. **ethn_PC1**: first PCA to address population stratification
 > 6. **ethn_PC2**: second PCA to address population stratification
 > 7. **Cell-type estimates**: NK_6, Bcell_6, CD4T_6, CD8T_6, Gran_6, Mono_6
+ 
+
+     - [Serum Metabolome](https://github.com/isglobal-brge/brgedata/blob/master/data/ExposomeDataChallenge2021/metabol_serum.RData): ExpressionSet called `metabol_serum` of 1198 individuals and 177 metabolites (see [here](https://github.com/isglobal-brge/brgedata/blob/master/data/ExposomeDataChallenge2021/HELIX_serum_metabol_report_IC_v4_APS_2017_04_06.pdf) for a descripton). 
+
