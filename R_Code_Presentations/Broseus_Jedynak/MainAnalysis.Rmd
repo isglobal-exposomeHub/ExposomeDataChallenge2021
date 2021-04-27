@@ -1,5 +1,5 @@
 ---
-title: 'Exposome Challenge'
+title: 'Searching for the risk factors for childhood overweight - An approach to identify the most relevant child BMI-associated exposures'
 author: "Lucile Broseus & Paulina Jedynak"
 date: "April 2021"
 output: html_document
