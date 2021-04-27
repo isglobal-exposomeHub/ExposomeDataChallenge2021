@@ -1,4 +1,4 @@
-**NOTE for selected talks**: Read [this file](https://github.com/isglobal-exposomeHub/ExposomeDataChallenge2021/blob/main/R_Code_Presentations/README.md) to see how to upload your R code.  
+**NOTE for selected talks**: Read [this file](https://github.com/isglobal-exposomeHub/ExposomeDataChallenge2021/blob/main/R_Code_Presentations/README.md) to see how to upload your R code (or the code used in any other language: Python, Matlab, ...).  
 
 # Exposome Data Challenge 2021
 
