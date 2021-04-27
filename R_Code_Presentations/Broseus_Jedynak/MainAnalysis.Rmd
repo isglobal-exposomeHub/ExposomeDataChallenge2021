@@ -11,6 +11,14 @@ knitr::opts_chunk$set(echo = TRUE, warning = F, message = F,
 ```
 
 ```{r, eval = TRUE, echo = FALSE}
+
+################################################################################
+# Path to raw exposome data
+# To be adapted
+#------------------------------------------------------------------------------#
+
+expDataFile <- "exposome.RData"
+
 ################################################################################
 # R packages and custom functions
 #------------------------------------------------------------------------------#
@@ -51,7 +59,6 @@ In both steps, where possible, we will adjust our analyses for known confounding
 #------------------------------------------------------------------------------#
 
 #Load raw data
-expDataFile <- paste(here::here(), "Data/exposome.RData", sep = "/")
 load(expDataFile)
 
 #Extract phenotype of interest
