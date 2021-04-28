@@ -1,0 +1,334 @@
+---
+title: "Exposome Raw (Scaled) Data"
+author: "Lawrence Chillrud (lgc2139@cumc.columbia.edu)"
+date: "4/5/2021"
+output:
+  html_document:
+    toc: TRUE
+    toc_float: TRUE
+    code_folding: hide
+fig_width: 12
+fig_height: 10
+params:
+  dataset: ""
+  subname: ""
+  mat: NULL
+  rowvar_name: "ID"
+  rowvar: NULL
+  colnames: NULL
+  colgroupings: NULL
+  rowgroupings: NULL
+  rowgroupname: "cohort"
+  scale_flag: FALSE
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+	echo = FALSE,
+	message = FALSE,
+	fig.height = 10,
+	fig.width = 12,
+	warning = FALSE
+)
+
+# for PCP
+library(PCPhelpers) # this file was written with version 0.3.5
+library(pcpr) # this file was written with version 1.0.0
+
+# for PCA
+library(ggfortify)
+
+# for data visualization
+library(ggplot2)
+library(heatmaply)
+
+# for data wrangling
+library(tidyr)
+library(tibble)
+
+# for FA
+library(psych)
+library(GPArotation)
+library(ggrepel)
+
+# for NNMF
+library(NMF)
+
+# for data visualization
+library(ggplot2)
+library(heatmaply)
+library(kableExtra)
+
+# for data wrangling
+library(dplyr)
+library(tidyr)
+library(tibble)
+library(stringr)
+library(purrr)
+```
+## Overview
+
+This document hopes to explore the `r params$dataset` (`r params$subname`) dataset, so that it may be used as a reference of comparison when looking at what PCP does to the data. 
+
+## `r params$dataset` (`r params$subname`) Data: EDA
+```{r, read in data}
+if (is.null(params$colnames)) {
+  cn <- colnames(params$mat)
+} else {
+  cn <- params$colnames
+}
+
+if (!is.null(params$colgroupings)) {
+  cng <- data.frame("Chemical" = cn, "Grouping" = params$colgroupings)
+} else {
+  cng <- data.frame("Chemical" = cn)
+}
+
+if (is.null(params$rowgroupings)) {
+  rgs <- rep(1, nrow(params$mat))
+} else {
+  rgs <- params$rowgroupings
+}
+
+if (is.null(params$rowvar)) {
+  rv <- 1:nrow(params$mat)
+} else {
+  rv <- params$rowvar
+}
+
+# format for plotting:
+plot.title <- paste(params$dataset, "data", paste0("(", params$subname, ")"))
+
+n <- nrow(params$mat)
+m <- ncol(params$mat)
+
+mat.org <- params$mat %>% 
+  as_tibble() %>% 
+  mutate(!!params$rowgroupname := params$rowgroupings) %>% 
+  mutate(!!params$rowvar_name := rv) %>%
+  arrange(!!sym(params$rowgroupname)) %>% 
+  as.data.frame()
+
+mat.df <- mat.org %>% 
+  pivot_longer(cols = cn, names_to = "Chemical") %>%
+  right_join(., cng, by = "Chemical")
+
+rowlabs <- params$rowvar
+cohorts <- mat.org[[params$rowgroupname]] %>% as.factor()
+mat.org <- mat.org %>% select(-!!params$rowgroupname, -!!params$rowvar_name)
+```
+
+### The raw data matrix
+```{r, heatmap}
+######## HEATMAP ######## 
+hm.raw <- heatmaply(mat.org, Colv = F, Rowv = F,
+                    ylab = params$rowvar_name, labRow = as.character(rowlabs), 
+                    cexRow = 100, row_side_colors = data.frame("cohort" = cohorts),
+                    col_side_colors = data.frame("exposure family" = as.factor(params$colgroupings)),
+                    showticklabels = c(T, F), main = plot.title, 
+                    label_names = c(params$rowvar_name, "exposure", "value")
+                    )
+
+hm.raw
+```
+
+### The data across rows
+```{r, data over time}
+######## LINE GRAPHS ######## 
+raw.data <- mat.df %>% 
+  rowid_to_column() %>%
+  ggplot(aes(x = rowid, y = value, color = !!sym(params$rowgroupname))) + 
+  geom_line() + 
+  facet_wrap(~Chemical) + theme_bw() + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        axis.title.x = element_blank()) + ggtitle("Raw data")
+
+######## TRENDS ########
+raw.trends <- mat.df %>% 
+  rowid_to_column() %>%
+  ggplot(aes(x = rowid, y = value, color = !!sym(params$rowgroupname))) + 
+  geom_smooth() + 
+  facet_wrap(~Chemical) + theme_bw() + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        axis.title.x = element_blank()) + ggtitle("Main trends in the data")
+
+raw.data
+raw.trends
+```
+
+### Data distribution
+```{r, dist}
+######## VIOLIN PLOTS ######## 
+raw.violins <- mat.df %>% 
+  ggplot(aes(x = Chemical, y = value, color = !!sym(params$rowgroupname))) + 
+  geom_boxplot() + ggtitle("Distribution of data") + ylim(c(0, 10)) + 
+  theme_bw() + theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+raw.violins
+```
+
+### Correlation Matrix
+```{r, cor mat}
+mat.eda <- eda(mat.org, cor_lbl = T, scale_flag = params$scale_flag, colgroups = cng, rowgroups = cohorts)
+
+mat.eda$cor + ggtitle(paste(plot.title, "(Pearson Correlation Matrix)"))
+```
+
+## `r plot.title` Data: PCA
+```{r, pca}
+mat.eda$var
+
+mat.eda$load
+
+mat.eda$biplot1
+mat.eda$biplot2
+mat.eda$biplot3
+```
+
+## `r plot.title` Data: FA
+
+### Orthogonal Models:
+
+Orthogonal Model (want factors as independent from one another as possible, get uncorrelated results):
+```{r}
+# Orthogonal Model (want factors as independent from one another as possible, get uncorrelated results):
+factors <- 1:10
+orthos <- factors %>% purrr::map(~fa(mat.org, nfactors = ., n.obs = n, rotate = "varimax", scores = "regression"))
+
+#orthos %>% walk(print, digits = 2, sort = T)
+
+ortho_ebics <- orthos %>% map_dbl(~.$EBIC)
+
+best_fit <- which.min(ortho_ebics)
+
+#### Oblique Model:
+
+#Oblique Model (want correlated factors):
+# Oblique Model (want correlated factors):
+#obliques <- 1:4 %>% purrr::map(~fa(L, nfactors = ., n.obs = n, rotate = "promax", scores = "regression"))
+#obliques %>% purrr::walk(print, digits = 2, sort = T)
+#oblique_ebics <- obliques %>% purrr::map_dbl(~.$EBIC)
+```
+
+Next we can look at the fit indices of our orthogonal models (lower EBIC = better fit). 
+```{r, fit indices}
+data.frame("Factors" = factors, "EBIC" = ortho_ebics) %>% kbl(caption = "Orthogonal Models: Fit Indices") %>% 
+  kable_classic(full_width = F, html_font = "Cambria", position = "center") %>% 
+  kable_styling(bootstrap_options = c("hover", "condensed"), fixed_thead = T) %>%
+  row_spec(best_fit, bold = T, color = "white", background = "#D7261E") %>%
+  footnote(general = "Model with the best fit shown in red.")
+```
+
+### Parameters
+
+Looking at the `best_fit`-factor the Orthogonal (Varimax) model:
+
+```{r}
+fa_model <- orthos[[best_fit]]
+
+print(fa_model, digits = 2)
+
+loadings <- as.tibble(cbind(rownames(fa_model$loadings[]), fa_model$loadings[])) %>% 
+  rename(Variable = V1) 
+
+loadings <- loadings %>% mutate_at(colnames(loadings)[str_starts(colnames(loadings), "MR")], as.numeric)
+
+loadings$Max <- colnames(loadings[, -1])[max.col(loadings[, -1], ties.method = "first")] # should be 2:5
+
+loadings %>% kbl(caption = "Loadings") %>% kable_classic(full_width = F, html_font = "Cambria", position = "center") %>% 
+  kable_styling(bootstrap_options = c("hover", "condensed"), fixed_thead = T) %>% scroll_box(width = "100%", height = "400px")
+
+scores <- as.tibble(cbind(rownames(fa_model$scores[]), fa_model$scores[])) %>% mutate_all(as.numeric)
+
+scores$Max <- colnames(scores)[max.col(scores, ties.method = "first")]
+
+scores %>% kbl(caption = "Scores") %>% kable_classic(full_width = F, html_font = "Cambria", position = "center") %>% 
+  kable_styling(bootstrap_options = c("hover", "condensed"), fixed_thead = T) %>% scroll_box(width = "100%", height = "400px")
+
+fa_pats <- loadings %>% 
+  select(-Max, -Variable) %>% 
+  mutate_all(as.numeric)
+
+fa_pats <- fa_pats %>% select(sort(colnames(.))) %>% as.matrix()
+print_patterns(fa_pats, colgroups = cng, pat_type = "factor", n = best_fit, title = "FA factors")
+```
+
+### Factor Correlation
+```{r}
+scores %>% dplyr::select(-Max) %>% corr.test() %>% print(short=FALSE)
+```
+
+### Visualize Data
+```{r}
+loadings %>% 
+  ggplot(aes(x = MR1, y = MR2, col = cng$Grouping)) + 
+  geom_point() + geom_label_repel(aes(label = Variable, col = cng$Grouping),
+                                  box.padding   = 0.35,
+                                  point.padding = 0.5,
+                                  segment.color = 'grey50') + 
+  theme(legend.position = "bottom") +
+  labs(title = "Variable Loadings on First and Second Factors")
+
+if ("MR3" %in% colnames(loadings)) {
+  loadings %>% 
+  ggplot(aes(x = MR1, y = MR3, col = cng$Grouping)) + 
+  geom_point() + geom_label_repel(aes(label = Variable, col = cng$Grouping),
+                                  box.padding   = 0.35,
+                                  point.padding = 0.5,
+                                  segment.color = 'grey50') + 
+  theme(legend.position = "none") +
+  labs(title = "Variable Loadings on First and Third Factors")
+}
+```
+
+```{r}
+plot_loadings <- loadings %>% select(-Max) %>% gather(key = "Factor", value = "Loading", -Variable) %>% mutate(Factor = str_replace(Factor, "MR", "Factor "))
+
+plot_loadings %>% 
+  ggplot(aes(x = Factor, y = Loading, fill = Factor)) + geom_col(position = "dodge") +
+  facet_wrap(~ Variable) + 
+  theme(legend.position = "none", axis.text.x = element_text(angle = 45, hjust = 1)) +
+  coord_flip() + geom_hline(yintercept = 0, size = 0.2) +
+  labs(title = "Variable Loadings on All Factors")
+```
+
+```{r}
+scores %>% ggplot(aes(x = Max, fill = Max)) + geom_bar() +
+  labs(x = "Factors", y = "Number of Individuals", title = "Number with Highest Scores per Factor") +
+  theme(legend.position = "none")
+
+scores %>% group_by(Max) %>% summarise(n())
+
+scores %>% gather(key = "factor", value = "score", -Max) %>% dplyr::select(-Max) %>% 
+  ggplot(aes(x = score)) + geom_density() + facet_grid(factor~.) # should be MR1:MR4
+```
+
+## `r plot.title` Data: NMF
+
+There are many different algorithms the `NMF` package in R provides, we'll pick the `offset` algorithm. We could also pick many different ranks. We'll just pick the number of ranks that FA found: `r best_fit`.
+```{r}
+num_cores <- ceiling(parallel::detectCores() / 2)
+if (sum(mat.org < 0) > 0) { mat.org[mat.org < 0] <- 0 }
+res <- nmf(mat.org, rank = best_fit, method = "offset", nrun = 30, seed = 123456, .opt = paste0('vp', num_cores))
+
+# only compute the scores
+s <- featureScore(res)
+summary(s)
+# compute the scores and characterize each metagene
+s <- extractFeatures(res) 
+str(s)
+
+W <- basis(res) # basis matrix / metagenes / contribution matrix
+H <- coef(res) # mixture coeffecient matrix / metagene expression profiles / profile matrix ie. loadings ?
+
+heatmaply(W, main = "NMF basis / contribution matrix (scores)", Rowv = F, Colv = F, 
+          ylab = params$rowvar_name, labRow = as.character(rowlabs),
+          cexRow = 100, row_side_colors = data.frame("cohort" = cohorts), showticklabels = c(T, F))
+
+heatmaply(H, main = "NMF profile matrix (loadings)", Rowv = F, Colv = F,
+          col_side_colors = data.frame("exposure family" = as.factor(params$colgroupings)))
+
+loadings <- t(H) %>% as.tibble()
+
+print_patterns(loadings, colgroups = cng, title = "NMF loadings")
+```

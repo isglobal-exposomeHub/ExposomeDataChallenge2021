@@ -1,0 +1,62 @@
+R version 4.0.3 (2020-10-10)
+Platform: x86_64-apple-darwin17.0 (64-bit)
+Running under: macOS Big Sur 10.16
+
+Matrix products: default
+LAPACK: /Library/Frameworks/R.framework/Versions/4.0/Resources/lib/libRlapack.dylib
+
+locale:
+[1] en_US.UTF-8/en_US.UTF-8/en_US.UTF-8/C/en_US.UTF-8/en_US.UTF-8
+
+attached base packages:
+[1] parallel  grid      stats     graphics  grDevices utils     datasets  methods   base     
+
+other attached packages:
+ [1] tictoc_1.0            doParallel_1.0.16     NMF_0.23.0            Biobase_2.50.0       
+ [5] BiocGenerics_0.36.0   cluster_2.1.0         rngtools_1.5          pkgmaker_0.32.2      
+ [9] registry_0.5-1        ggrepel_0.9.1         GPArotation_2014.11-1 psych_2.0.12         
+[13] ggfortify_0.4.11      PCPhelpers_0.3.5      pcpr_1.0.0            glmnet_4.1-1         
+[17] mgcv_1.8-33           nlme_3.1-151          kableExtra_1.3.1      heatmaply_1.1.1      
+[21] viridis_0.5.1         viridisLite_0.3.0     plotly_4.9.3          GPfit_1.0-8          
+[25] doSNOW_1.0.19         snow_0.4-3            iterators_1.0.13      foreach_1.5.1        
+[29] Matrix_1.3-2          pracma_2.3.3          tidyselect_1.1.0      reshape_0.8.8        
+[33] tableone_0.12.0       janitor_2.1.0         EnvStats_2.4.0        olsrr_0.5.3          
+[37] car_3.0-10            carData_3.0-4         broom_0.7.3           RColorBrewer_1.1-2   
+[41] pROC_1.17.0.1         rpart.plot_3.0.9      rpart_4.1-15          naniar_0.6.0         
+[45] reshape2_1.4.4        cowplot_1.1.1         gridExtra_2.3         survival_3.2-7       
+[49] ggsn_0.5.0            forestplot_1.10.1     checkmate_2.0.0       magrittr_2.0.1       
+[53] extrafont_0.17        MASS_7.3-53           nortest_1.0-4         raster_3.4-5         
+[57] sp_1.4-5              fBasics_3042.89.1     timeSeries_3062.100   timeDate_3043.102    
+[61] caret_6.0-86          lattice_0.20-41       GGally_2.1.0          haven_2.3.1          
+[65] forcats_0.5.0         stringr_1.4.0         dplyr_1.0.3           purrr_0.3.4          
+[69] readr_1.4.0           tidyr_1.1.2           tibble_3.0.5          ggplot2_3.3.3        
+[73] tidyverse_1.3.0       here_1.0.1           
+
+loaded via a namespace (and not attached):
+  [1] utf8_1.1.4           htmlwidgets_1.5.3    TSP_1.1-10           gmp_0.6-2           
+  [5] maptools_1.0-2       munsell_0.5.0        codetools_0.2-18     units_0.6-7         
+  [9] withr_2.4.1          colorspace_2.0-0     highr_0.8            knitr_1.31          
+ [13] rstudioapi_0.13      stats4_4.0.3         Rttf2pt1_1.3.8       labeling_0.4.2      
+ [17] RgoogleMaps_1.4.5.3  mnormt_2.0.2         farver_2.0.3         bit64_4.0.5         
+ [21] rprojroot_2.0.2      vctrs_0.3.6          generics_0.1.0       ipred_0.9-11        
+ [25] xfun_0.20            R6_2.5.0             seriation_1.2-9      bitops_1.0-6        
+ [29] lhs_1.1.1            assertthat_0.2.1     scales_1.1.1         nnet_7.3-15         
+ [33] gtable_0.3.0         goftest_1.2-2        spatial_7.3-13       rlang_0.4.10        
+ [37] splines_4.0.3        extrafontdb_1.0      lazyeval_0.2.2       ModelMetrics_1.2.2.2
+ [41] yaml_2.2.1           abind_1.4-5          modelr_0.1.8         crosstalk_1.1.1     
+ [45] backports_1.2.1      tools_4.0.3          lava_1.6.9           gridBase_0.4-7      
+ [49] ellipsis_0.3.1       Rcpp_1.0.6           plyr_1.8.6           classInt_0.4-3      
+ [53] ggmap_3.0.0          fs_1.5.0             survey_4.0           data.table_1.13.6   
+ [57] openxlsx_4.2.3       reprex_1.0.0         tmvnsim_1.0-2        hms_1.0.0           
+ [61] evaluate_0.14        xtable_1.8-4         rio_0.5.16           jpeg_0.1-8.1        
+ [65] readxl_1.3.1         shape_1.4.5          compiler_4.0.3       KernSmooth_2.23-18  
+ [69] crayon_1.3.4         htmltools_0.5.1.1    visdat_0.5.3         lubridate_1.7.9.2   
+ [73] DBI_1.1.1            dbplyr_2.0.0         sf_0.9-7             cli_2.2.0           
+ [77] mitools_2.4          gower_0.2.2          pkgconfig_2.0.3      foreign_0.8-81      
+ [81] recipes_0.1.16       xml2_1.3.2           webshot_0.5.2        prodlim_2019.11.13  
+ [85] CVXR_1.0-9           rvest_0.3.6          snakecase_0.11.0     digest_0.6.27       
+ [89] rmarkdown_2.6        cellranger_1.1.0     dendextend_1.14.0    curl_4.3            
+ [93] rjson_0.2.20         lifecycle_0.2.0      jsonlite_1.7.2       fansi_0.4.2         
+ [97] pillar_1.4.7         httr_1.4.2           glue_1.4.2           zip_2.1.1           
+[101] png_0.1-7            bit_4.0.4            class_7.3-18         stringi_1.5.3       
+[105] Rmpfr_0.8-3          e1071_1.7-4

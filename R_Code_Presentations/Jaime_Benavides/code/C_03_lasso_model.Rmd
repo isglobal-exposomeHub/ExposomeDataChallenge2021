@@ -1,0 +1,255 @@
+---
+title: "Lasso model"
+author: "Yanelli Nunez"
+date: "4/11/2021"
+output:
+ html_document:
+    toc: TRUE
+    toc_float: TRUE
+    code_folding: hide
+editor_options: 
+  chunk_output_type: console
+---
+
+Objective: 
+
+```{r include=FALSE}
+# add folder locations
+source(here::here("code/0_01_init_directory_structure.R"))
+
+# load packages
+# list packages needed:
+list.of.packages = c('tidyverse', 'haven','ggplot2','GGally','caret','readr',
+                     'fBasics','raster', 'nortest','MASS','extrafont', 'forestplot',
+                     'ggsn','survival','grid','gridExtra', 'cowplot','reshape2',
+                     'naniar','rpart','rpart.plot','pROC', 'RColorBrewer', 'broom',
+                     'car','olsrr','EnvStats','janitor','tableone', 'reshape', 
+                     'magrittr', 'tidyselect', 'dplyr', 'tidyr', 'stringr', 'purrr', 'tibble',
+                     'pracma', 'Matrix', 'foreach', 'iterators', 'parallel', 'snow', 'doSNOW',
+                     'GPfit', 'heatmaply', 'kableExtra', 'mgcv', 'glmnet')
+
+# check if list of packages is installed. if not, it will install ones not yet installed:
+new.packages <- list.of.packages[!(list.of.packages %in% installed.packages()[,"Package"])]
+if(length(new.packages)) install.packages(new.packages)
+
+# import packages:
+lapply(list.of.packages, require, character.only = TRUE)
+```
+
+
+## 1. Load data
+
+```{r}
+load(paste0(generated.data.folder, "exposome_pren_postnatal.RData")) 
+load(paste0(generated.data.folder, "health_model_pcp.RData")) 
+
+prenatal <- as.data.frame(pcp_outs$pre$S) %>%
+  clean_names() %>%
+ rename_all( ~ paste0("pre_", .x))
+
+postnatal <- as.data.frame(pcp_outs$post$S) %>%
+  clean_names() %>%
+ rename_all( ~ paste0("post_", .x))
+
+
+load(paste0(generated.data.folder, "health_model_patterns.RData"))
+# scores are NOT organized by cohort as they are in the knitted report HTML files, but rather by the order of the original pre and post natal scaled data matrices
+
+
+pren_factors <- as.data.frame(factors$pre$scores[]) %>%
+ rename_all( ~ paste0("f_pre_", .x))
+
+post_factos <- as.data.frame(factors$post$scores[]) %>%
+ rename_all( ~ paste0("f_post_", .x))
+
+factors <- cbind(pren_factors, post_factos) %>%
+    rownames_to_column(., "ID") %>%
+  mutate(ID = as.integer(ID))
+
+
+load(paste0(raw.data.folder, "exposome_v2.RData")) 
+
+extra_cov <- exposome %>%
+dplyr::select( ID, FAS_cat_None,e3_asmokcigd_p_None)
+
+```
+
+## 2. Bind, covariants, s matrix, and outcome
+
+Potential Confounders: 
+Child sex
+Child age
+Pre- pregnancy maternal bmi
+Weigh of child (6-11yrs)
+Heigh of child (6-11 yrs)
+Maternal weight gain during pregnancy
+Gestational age
+Maternal age
+Cohort
+Maternal education
+Native
+Parity
+
+Outcome:
+Child Behavior Checklist (CBCL) --> hs_Gen_Tot
+
+```{r}
+
+# PCP Sparse matrix
+s.matrix <- cbind(prenatal, postnatal) %>%
+ # mutate_all( ~(scale(., center = FALSE, scale = sd(., na.rm = TRUE)))) %>%
+    rownames_to_column(., "ID") %>%
+  mutate(ID = as.integer(ID))
+
+# PCP factors 
+
+
+# Outcome 
+cbcl <- phenotype %>%
+  dplyr::select(ID, hs_Gen_Tot)
+
+
+hist(cbcl$hs_Gen_Tot);abline(v=mean(cbcl$hs_Gen_Tot), col="red") #right skewed distribution
+mean(cbcl$hs_Gen_Tot)
+var(cbcl$hs_Gen_Tot) #variance greater than mean
+
+
+# Bind S matrix with outcome
+data_full <- full_join(cbcl, s.matrix, by = "ID") %>% 
+  full_join(., covariates, by = "ID") %>%
+  dplyr::select(-hs_c_weight_None, -hs_c_height_None, -hs_wgtgain_None, -e3_yearbir_None, -h_mbmi_None) %>% 
+  full_join(., extra_cov, by = "ID") %>%
+ full_join(., factors, by = "ID") %>%
+  dplyr::select(-ID) %>%
+  clean_names()
+ 
+
+
+#summary(data_full)
+
+
+```
+
+
+## 3. Data Prep for model
+
+```{r}
+library(glmnet)
+# Create a matrix of predictors as x
+x = model.matrix(hs_gen_tot~ ., data_full)[,-1]
+
+dim(x)
+colnames(x)
+
+# Extract outcome vector
+y = data_full$hs_gen_tot
+
+# Define variables to penalize and not penalize
+is_penalized = c(rep(1, ncol(x[,1:52])), rep(0, ncol(x[,53:78])))
+```
+
+## 4. Glmnet poisson 
+
+Notes:  
+
+- glmnet() fits the model for 100 values of lambda
+- The function glmnet returns a sequence of models for the users to choose from
+- Thus we use cv.glmnet() to identify the best lambda value using cross validation which we then specify in the glmnet() function
+
+Info about fitting a quasi poisson or negative binomial using glmnet:
+https://glmnet.stanford.edu/articles/glmnetFamily.html
+
+
+```{r}
+
+set.seed(10)
+
+#cross validation
+cv.glmnet = cv.glmnet(x, y, 
+                      alpha = 1,
+                      penalty.factor = is_penalized,
+                      family = "poisson",
+                      standardize = TRUE,
+                      #trace.it = TRUE,
+                      n.lambda = 200, max.iter = 20000,
+                      seed = 1987)
+cv.glmnet
+plot(cv.glmnet)
+
+best_lambda = cv.glmnet$lambda.min # lambda.min is the value of 𝜆 that gives minimum mean cross-validated error
+
+best_lambda
+
+# run lasso with best lambda
+lasso.glmnet = glmnet(x, y, 
+                   penalty.factor = is_penalized,
+                   alpha = 1, 
+                   lambda = best_lambda,
+                   family = "poisson",
+                   standardize = TRUE,
+                   seed = 1987)
+
+coef_lasso = coef(lasso.glmnet)
+coef_lasso
+```
+
+## 5. Non zero coefficients
+```{r}
+
+# Find variables that are non-zero
+dimnames(coef_lasso)[[1]][which(coef_lasso != 0)]
+
+# create a dataframe
+lasso_beta = cbind(rownames(coef_lasso), as.vector(coef_lasso)) %>% 
+  as.data.frame() %>% 
+  rename(variable = 1, beta = 2) %>% 
+  mutate(beta = as.numeric(beta)) %>% 
+  filter(variable != "(Intercept)")  
+
+# Find the number of non-zero estimates
+counts_lasso <- lasso_beta %>%
+  filter(beta != 0) %>%
+  #group_by(chem) %>%
+  summarise(number_nonzero = n())
+
+counts_lasso
+
+```
+
+## 6. Visuals
+
+```{r}
+
+fig_data <- lasso_beta %>%
+ separate(variable, c("group", "extra"), remove = FALSE) %>%
+  dplyr::select(-extra) %>%
+  dplyr::mutate(group = if_else(group == 'pre', "Pre-natal",
+                               if_else(group == 'post', "Post-natal", 
+                                       if_else(group == 'f', "Factors", "Covariates"))))
+
+                
+fig <- fig_data %>%
+  filter(beta != 0) %>%
+  ggplot(aes(x = beta, y = variable, color = group)) + 
+  geom_point(size = 1.5, alpha = 0.7) + 
+  #facet_wrap(~chem) +
+  geom_vline(xintercept = 0) +
+  theme_minimal() +
+  ggtitle("Coefficients from Lasso for pre-, post-natal and covariates")
+
+ggplotly(fig, tooltip = "beta")
+
+
+#fig2 <- fig_data %>%
+#  filter(beta != 0,
+#         group != "covariates") %>%
+#  ggplot(aes(x = beta, y = variable, color = group)) + 
+#  geom_point(size = 1.5, alpha = 0.7) + 
+#  #facet_wrap(~chem) +
+#  geom_vline(xintercept = 0) +
+#  theme_minimal() +
+#  ggtitle("Coefficients from Lasso for pre- and post-natal exposure variables")
+
+#ggplotly(fig2, tooltip = "beta")
+```
+
