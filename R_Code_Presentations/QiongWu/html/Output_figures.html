@@ -1,0 +1,339 @@
+
+<!DOCTYPE html
+  PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<html><head>
+      <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <!--
+This HTML was auto-generated from MATLAB code.
+To make changes, update the MATLAB code and republish this document.
+      --><title>Output_figures</title><meta name="generator" content="MATLAB 9.9"><link rel="schema.DC" href="http://purl.org/dc/elements/1.1/"><meta name="DC.date" content="2021-04-25"><meta name="DC.source" content="Output_figures.m"><style type="text/css">
+html,body,div,span,applet,object,iframe,h1,h2,h3,h4,h5,h6,p,blockquote,pre,a,abbr,acronym,address,big,cite,code,del,dfn,em,font,img,ins,kbd,q,s,samp,small,strike,strong,tt,var,b,u,i,center,dl,dt,dd,ol,ul,li,fieldset,form,label,legend,table,caption,tbody,tfoot,thead,tr,th,td{margin:0;padding:0;border:0;outline:0;font-size:100%;vertical-align:baseline;background:transparent}body{line-height:1}ol,ul{list-style:none}blockquote,q{quotes:none}blockquote:before,blockquote:after,q:before,q:after{content:'';content:none}:focus{outine:0}ins{text-decoration:none}del{text-decoration:line-through}table{border-collapse:collapse;border-spacing:0}
+
+html { min-height:100%; margin-bottom:1px; }
+html body { height:100%; margin:0px; font-family:Arial, Helvetica, sans-serif; font-size:10px; color:#000; line-height:140%; background:#fff none; overflow-y:scroll; }
+html body td { vertical-align:top; text-align:left; }
+
+h1 { padding:0px; margin:0px 0px 25px; font-family:Arial, Helvetica, sans-serif; font-size:1.5em; color:#d55000; line-height:100%; font-weight:normal; }
+h2 { padding:0px; margin:0px 0px 8px; font-family:Arial, Helvetica, sans-serif; font-size:1.2em; color:#000; font-weight:bold; line-height:140%; border-bottom:1px solid #d6d4d4; display:block; }
+h3 { padding:0px; margin:0px 0px 5px; font-family:Arial, Helvetica, sans-serif; font-size:1.1em; color:#000; font-weight:bold; line-height:140%; }
+
+a { color:#005fce; text-decoration:none; }
+a:hover { color:#005fce; text-decoration:underline; }
+a:visited { color:#004aa0; text-decoration:none; }
+
+p { padding:0px; margin:0px 0px 20px; }
+img { padding:0px; margin:0px 0px 20px; border:none; }
+p img, pre img, tt img, li img, h1 img, h2 img { margin-bottom:0px; }
+
+ul { padding:0px; margin:0px 0px 20px 23px; list-style:square; }
+ul li { padding:0px; margin:0px 0px 7px 0px; }
+ul li ul { padding:5px 0px 0px; margin:0px 0px 7px 23px; }
+ul li ol li { list-style:decimal; }
+ol { padding:0px; margin:0px 0px 20px 0px; list-style:decimal; }
+ol li { padding:0px; margin:0px 0px 7px 23px; list-style-type:decimal; }
+ol li ol { padding:5px 0px 0px; margin:0px 0px 7px 0px; }
+ol li ol li { list-style-type:lower-alpha; }
+ol li ul { padding-top:7px; }
+ol li ul li { list-style:square; }
+
+.content { font-size:1.2em; line-height:140%; padding: 20px; }
+
+pre, code { font-size:12px; }
+tt { font-size: 1.2em; }
+pre { margin:0px 0px 20px; }
+pre.codeinput { padding:10px; border:1px solid #d3d3d3; background:#f7f7f7; }
+pre.codeoutput { padding:10px 11px; margin:0px 0px 20px; color:#4c4c4c; }
+pre.error { color:red; }
+
+@media print { pre.codeinput, pre.codeoutput { word-wrap:break-word; width:100%; } }
+
+span.keyword { color:#0000FF }
+span.comment { color:#228B22 }
+span.string { color:#A020F0 }
+span.untermstring { color:#B20000 }
+span.syscmd { color:#B28C00 }
+span.typesection { color:#A0522D }
+
+.footer { width:auto; padding:10px 0px; margin:25px 0px 0px; border-top:1px dotted #878787; font-size:0.8em; line-height:140%; font-style:italic; color:#878787; text-align:left; float:none; }
+.footer p { margin:0px; }
+.footer a { color:#878787; }
+.footer a:hover { color:#878787; text-decoration:underline; }
+.footer a:visited { color:#878787; }
+
+table th { padding:7px 5px; text-align:left; vertical-align:middle; border: 1px solid #d6d4d4; font-weight:bold; }
+table td { padding:7px 5px; text-align:left; vertical-align:top; border:1px solid #d6d4d4; }
+
+
+
+
+
+  </style></head><body><div class="content"><h2>Contents</h2><div><ul><li><a href="#2">Draw original matrix</a></li><li><a href="#3">Draw matrix with detected structure</a></li><li><a href="#4">Add variable names</a></li><li><a href="#5">Sort the correlation matrics by multi-to-multi associations</a></li></ul></div><pre class="codeinput">clear
+load(<span class="string">'meta_merge.mat'</span>)
+load(<span class="string">'expos_merge.mat'</span>)
+</pre><h2 id="2">Draw original matrix</h2><pre class="codeinput">[cor P] = corrcoef([meta' expos']);
+cor_bi = cor(1:221,222:390);
+figure;imagesc(cor_bi);colormap <span class="string">jet</span>;colorbar;snapnow
+set(gca,<span class="string">'FontSize'</span>,12)
+<span class="comment">%print('cor_bi_raw','-dpng','-r300');</span>
+</pre><img vspace="5" hspace="5" src="Output_figures_01.png" alt=""> <img vspace="5" hspace="5" src="Output_figures_02.png" alt=""> <h2 id="3">Draw matrix with detected structure</h2><pre class="codeinput">load(<span class="string">'expos_meta_res.mat'</span>)
+s_out = setdiff(1:221,s_in);
+t_out = setdiff(1:169,t_in);
+
+list_row = [s_in(Clist1) sort(s_out)];
+list_col = [t_in(Clist2) sort(t_out)];
+figure;imagesc(cor_bi(list_row,list_col));colormap <span class="string">jet</span>;colorbar;
+set(gca,<span class="string">'FontSize'</span>,12)
+<span class="comment">%daspect([1 1 1])</span>
+<span class="comment">%print('cor_bi_sorted','-dpng','-r300');</span>
+figure;imagesc(cor_bi(s_in(Clist1),t_in(Clist2)));colormap <span class="string">jet</span>;colorbar;
+pbaspect([size(t_in,2) size(s_in,2) 1])
+<span class="comment">%print('W_in_sorted','-dpng','-r300');</span>
+</pre><img vspace="5" hspace="5" src="Output_figures_03.png" alt=""> <img vspace="5" hspace="5" src="Output_figures_04.png" alt=""> <img vspace="5" hspace="5" src="Output_figures_05.png" alt=""> <h2 id="4">Add variable names</h2><pre class="codeinput">expos_names = replace(expos_names, <span class="string">'_'</span>, <span class="string">'.'</span>);
+row_names = meta_names(s_in(Clist1));
+col_names = expos_names(t_in(Clist2));
+meta_group1 = meta_names(s_in(find(Cindx1==CID1(1))))
+meta_group2 = meta_names(s_in(find(Cindx1==CID1(2))))
+expos_group1 = expos_names(t_in(find(Cindx2==CID2(1))))
+expos_group2 = expos_names(t_in(find(Cindx2==CID2(2))))
+figure;imagesc(cor_bi(s_in(Clist1)',t_in(Clist2)));colormap <span class="string">jet</span>;colorbar;
+set(gca, <span class="string">'XTick'</span>,1:size(t_in,2),<span class="string">'XTickLabel'</span>, col_names,<span class="string">'YTick'</span>,1:size(s_in,2),<span class="string">'YTickLabel'</span>, row_names,<span class="string">'FontSize'</span>,7)
+xtickangle(45)
+pbaspect([size(t_in,2) size(s_in,2) 1])
+<span class="comment">%print('expos2meta_names.png','-dpng','-r300');</span>
+</pre><pre class="codeoutput">
+meta_group1 =
+
+  33&times;1 cell array
+
+    {'log.lysoPC.a.C17.0'}
+    {'log.PC.aa.C28.1'   }
+    {'log.PC.aa.C32.3'   }
+    {'log.PC.aa.C36.0'   }
+    {'log.PC.aa.C36.5'   }
+    {'log.PC.aa.C36.6'   }
+    {'log.PC.aa.C38.0'   }
+    {'log.PC.aa.C38.1'   }
+    {'log.PC.aa.C38.5'   }
+    {'log.PC.aa.C38.6'   }
+    {'log.PC.aa.C40.1'   }
+    {'log.PC.aa.C40.6'   }
+    {'log.PC.aa.C42.0'   }
+    {'log.PC.aa.C42.1'   }
+    {'log.PC.aa.C42.2'   }
+    {'log.PC.aa.C42.5'   }
+    {'log.PC.aa.C42.6'   }
+    {'log.PC.ae.C30.0'   }
+    {'log.PC.ae.C34.0'   }
+    {'log.PC.ae.C36.0'   }
+    {'log.PC.ae.C36.1'   }
+    {'log.PC.ae.C38.0'   }
+    {'log.PC.ae.C38.6'   }
+    {'log.PC.ae.C40.1'   }
+    {'log.PC.ae.C40.2'   }
+    {'log.PC.ae.C40.6'   }
+    {'log.PC.ae.C42.0'   }
+    {'log.PC.ae.C42.2'   }
+    {'log.PC.ae.C42.3'   }
+    {'log.SM..OH..C14.1' }
+    {'log.SM..OH..C16.1' }
+    {'log.SM.C26.1'      }
+    {'Hippurate'         }
+
+
+meta_group2 =
+
+  13&times;1 cell array
+
+    {'log.Ac.Orn'        }
+    {'log.ADMA'          }
+    {'log.Asp'           }
+    {'log.C10.1'         }
+    {'log.C16'           }
+    {'log.C18.1'         }
+    {'log.C18.2'         }
+    {'log.Glu'           }
+    {'log.lysoPC.a.C20.3'}
+    {'log.lysoPC.a.C20.4'}
+    {'log.Met.SO'        }
+    {'log.PC.aa.C34.2'   }
+    {'log.Taurine'       }
+
+
+expos_group1 =
+
+  49&times;1 cell array
+
+    {'h.abs.ratio.preg.Log'      }
+    {'h.pm10.ratio.preg.None'    }
+    {'h.pm25.ratio.preg.None'    }
+    {'hs.pm10.dy.hs.h.None'      }
+    {'hs.pm10.wk.hs.h.None'      }
+    {'hs.pm10.yr.hs.h.None'      }
+    {'hs.pm25.dy.hs.h.None'      }
+    {'hs.pm25.wk.hs.h.None'      }
+    {'hs.pm25.yr.hs.h.None'      }
+    {'hs.pm25abs.yr.hs.h.Log'    }
+    {'h.accesslines300.preg.dic0'}
+    {'h.builtdens300.preg.Sqrt'  }
+    {'hs.accesslines300.h.dic0'  }
+    {'hs.builtdens300.h.Sqrt'    }
+    {'hs.landuseshan300.h.None'  }
+    {'hs.walkability.mean.h.None'}
+    {'hs.accesslines300.s.dic0'  }
+    {'hs.builtdens300.s.Sqrt'    }
+    {'hs.landuseshan300.s.None'  }
+    {'h.NO2.Log'                 }
+    {'h.PM.Log'                  }
+    {'hs.cd.m.Log2'              }
+    {'hs.co.m.Log2'              }
+    {'hs.cu.c.Log2'              }
+    {'hs.pb.c.Log2'              }
+    {'h.temperature.preg.None'   }
+    {'hs.tm.mt.hs.h.None'        }
+    {'hs.uvdvf.mt.hs.h.None'     }
+    {'hs.tm.dy.hs.h.None'        }
+    {'hs.tm.wk.hs.h.None'        }
+    {'hs.uvdvf.dy.hs.h.None'     }
+    {'hs.uvdvf.wk.hs.h.None'     }
+    {'h.lden.cat.preg.None'      }
+    {'hs.dde.madj.Log2'          }
+    {'hs.ddt.madj.Log2'          }
+    {'hs.pbde153.madj.Log2'      }
+    {'hs.prpa.cadj.Log2'         }
+    {'hs.trcs.cadj.Log2'         }
+    {'hs.mecpp.cadj.Log2'        }
+    {'hs.mehhp.cadj.Log2'        }
+    {'hs.mehp.cadj.Log2'         }
+    {'hs.meohp.cadj.Log2'        }
+    {'hs.mep.cadj.Log2'          }
+    {'hs.mibp.cadj.Log2'         }
+    {'hs.sumDEHP.cadj.Log2'      }
+    {'h.distinvnear1.preg.Log'   }
+    {'hs.trafload.h.pow1over3'   }
+    {'hs.trafnear.h.pow1over3'   }
+    {'h.bro.preg.Log'            }
+
+
+expos_group2 =
+
+  42&times;1 cell array
+
+    {'hs.no2.wk.hs.h.Log'      }
+    {'h.fdensity300.preg.Log'  }
+    {'h.frichness300.preg.None'}
+    {'hs.accesspoints300.h.Log'}
+    {'hs.fdensity300.h.Log'    }
+    {'hs.accesspoints300.s.Log'}
+    {'h.TEX.Log'               }
+    {'hs.KIDMED.None'          }
+    {'hs.dif.hours.total.None' }
+    {'hs.as.c.Log2'            }
+    {'hs.cs.c.Log2'            }
+    {'hs.cs.m.Log2'            }
+    {'hs.hg.c.Log2'            }
+    {'hs.hum.mt.hs.h.None'     }
+    {'hs.hum.dy.hs.h.None'     }
+    {'hs.hum.wk.hs.h.None'     }
+    {'h.ndvi100.preg.None'     }
+    {'hs.ndvi100.h.None'       }
+    {'hs.ndvi100.s.None'       }
+    {'hs.pcb118.cadj.Log2'     }
+    {'hs.pcb118.madj.Log2'     }
+    {'hs.pcb138.cadj.Log2'     }
+    {'hs.pcb138.madj.Log2'     }
+    {'hs.pcb153.cadj.Log2'     }
+    {'hs.pcb153.madj.Log2'     }
+    {'hs.pcb170.cadj.Log2'     }
+    {'hs.pcb170.madj.Log2'     }
+    {'hs.pcb180.cadj.Log2'     }
+    {'hs.pcb180.madj.Log2'     }
+    {'hs.sumPCBs5.cadj.Log2'   }
+    {'hs.sumPCBs5.madj.Log2'   }
+    {'hs.pbde153.cadj.Log2'    }
+    {'hs.pfhxs.c.Log2'         }
+    {'hs.pfhxs.m.Log2'         }
+    {'hs.pfna.c.Log2'          }
+    {'hs.pfoa.c.Log2'          }
+    {'hs.pfos.c.Log2'          }
+    {'hs.pfos.m.Log2'          }
+    {'hs.pfunda.c.Log2'        }
+    {'hs.bpa.madj.Log2'        }
+    {'hs.bupa.madj.Log2'       }
+    {'hs.mehp.madj.Log2'       }
+
+</pre><img vspace="5" hspace="5" src="Output_figures_06.png" alt=""> <img vspace="5" hspace="5" src="Output_figures_07.png" alt=""> <h2 id="5">Sort the correlation matrics by multi-to-multi associations</h2><pre class="codeinput">cor_meta = cor(1:221,1:221);
+cor_expos = cor(222:390,222:390);
+
+figure;imagesc(cor_meta(s_in(Clist1),s_in(Clist1)));colormap <span class="string">jet</span>;colorbar;snapnow;
+set(gca,<span class="string">'FontSize'</span>,12)
+<span class="comment">%print('meta_cor_rotate.png','-dpng','-r300');</span>
+figure;imagesc(cor_meta(list_row ,list_row));colormap <span class="string">jet</span>;colorbar;snapnow;
+set(gca,<span class="string">'FontSize'</span>,12)
+<span class="comment">%print('meta_cor_all_rotate.png','-dpng','-r300');</span>
+
+figure;imagesc(cor_expos(t_in(Clist2),t_in(Clist2)));colormap <span class="string">jet</span>;colorbar;snapnow;
+set(gca,<span class="string">'FontSize'</span>,12)
+<span class="comment">%print('expos_cor_rotate.png','-dpng','-r300');</span>
+figure;imagesc(cor_expos(list_col,list_col));colormap <span class="string">jet</span>;colorbar;snapnow;
+set(gca,<span class="string">'FontSize'</span>,12)
+<span class="comment">%print('expos_cor_all_rotate.png','-dpng','-r300');</span>
+</pre><img vspace="5" hspace="5" src="Output_figures_08.png" alt=""> <img vspace="5" hspace="5" src="Output_figures_09.png" alt=""> <img vspace="5" hspace="5" src="Output_figures_10.png" alt=""> <img vspace="5" hspace="5" src="Output_figures_11.png" alt=""> <img vspace="5" hspace="5" src="Output_figures_12.png" alt=""> <img vspace="5" hspace="5" src="Output_figures_13.png" alt=""> <img vspace="5" hspace="5" src="Output_figures_14.png" alt=""> <img vspace="5" hspace="5" src="Output_figures_15.png" alt=""> <p class="footer"><br><a href="https://www.mathworks.com/products/matlab/">Published with MATLAB&reg; R2020b</a><br></p></div><!--
+##### SOURCE BEGIN #####
+clear
+load('meta_merge.mat')
+load('expos_merge.mat')
+%% Draw original matrix
+[cor P] = corrcoef([meta' expos']);
+cor_bi = cor(1:221,222:390);
+figure;imagesc(cor_bi);colormap jet;colorbar;snapnow
+set(gca,'FontSize',12)
+%print('cor_bi_raw','-dpng','-r300');
+
+%% Draw matrix with detected structure
+load('expos_meta_res.mat')
+s_out = setdiff(1:221,s_in);
+t_out = setdiff(1:169,t_in);
+
+list_row = [s_in(Clist1) sort(s_out)];
+list_col = [t_in(Clist2) sort(t_out)];
+figure;imagesc(cor_bi(list_row,list_col));colormap jet;colorbar;
+set(gca,'FontSize',12)
+%daspect([1 1 1])
+%print('cor_bi_sorted','-dpng','-r300');
+figure;imagesc(cor_bi(s_in(Clist1),t_in(Clist2)));colormap jet;colorbar;
+pbaspect([size(t_in,2) size(s_in,2) 1])
+%print('W_in_sorted','-dpng','-r300');
+
+%% Add variable names 
+expos_names = replace(expos_names, '_', '.');
+row_names = meta_names(s_in(Clist1));
+col_names = expos_names(t_in(Clist2));
+meta_group1 = meta_names(s_in(find(Cindx1==CID1(1))))
+meta_group2 = meta_names(s_in(find(Cindx1==CID1(2))))
+expos_group1 = expos_names(t_in(find(Cindx2==CID2(1))))
+expos_group2 = expos_names(t_in(find(Cindx2==CID2(2))))
+figure;imagesc(cor_bi(s_in(Clist1)',t_in(Clist2)));colormap jet;colorbar;
+set(gca, 'XTick',1:size(t_in,2),'XTickLabel', col_names,'YTick',1:size(s_in,2),'YTickLabel', row_names,'FontSize',7)
+xtickangle(45)
+pbaspect([size(t_in,2) size(s_in,2) 1])
+%print('expos2meta_names.png','-dpng','-r300');
+
+%% Sort the correlation matrics by multi-to-multi associations
+cor_meta = cor(1:221,1:221);
+cor_expos = cor(222:390,222:390);
+
+figure;imagesc(cor_meta(s_in(Clist1),s_in(Clist1)));colormap jet;colorbar;snapnow;
+set(gca,'FontSize',12)
+%print('meta_cor_rotate.png','-dpng','-r300');
+figure;imagesc(cor_meta(list_row ,list_row));colormap jet;colorbar;snapnow;
+set(gca,'FontSize',12)
+%print('meta_cor_all_rotate.png','-dpng','-r300');
+
+figure;imagesc(cor_expos(t_in(Clist2),t_in(Clist2)));colormap jet;colorbar;snapnow;
+set(gca,'FontSize',12)
+%print('expos_cor_rotate.png','-dpng','-r300');
+figure;imagesc(cor_expos(list_col,list_col));colormap jet;colorbar;snapnow;
+set(gca,'FontSize',12)
+%print('expos_cor_all_rotate.png','-dpng','-r300');
+##### SOURCE END #####
+--></body></html>
