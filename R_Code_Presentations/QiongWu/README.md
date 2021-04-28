@@ -5,7 +5,9 @@ We focus on the parsimonious multivariate-multivariate association pattern detec
 # Codes
 
 "greedy_bipar.m" to maximize the proposed generalized density metric
+
 "greedy_lik_fun.m" to select the tunning parameter via likelihood
+
 "Output_figures.html" for the whole procedure
 
 # Slides
