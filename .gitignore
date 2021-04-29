@@ -39,3 +39,7 @@ vignettes/*.pdf
 .Renviron
 
 .gitignore
+
+
+# Others
+R_Code_Presentations/.DS_Store
