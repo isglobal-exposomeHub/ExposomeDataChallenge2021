@@ -1,0 +1,1 @@
+This are the codes for the presenattion **"A novel penalized LASSO type Bayesian Weighted Quantile Sum Regression Approach for exposome-outcome effect estimation"** by Vishal Midya. The MCMC is set up extensively through Rstan. More detailed user friendly codes will be gradually included.
