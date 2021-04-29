@@ -1,0 +1,305 @@
+# Code for Penalized Group LASSO in Bayesian Weighted Quantile Sum (BWQS) Regression
+
+
+require("rstan")
+require('ggplot2')
+require('BWQS')
+require('mvtnorm')
+require('tidyverse')
+
+## Main Code chunk
+
+model_bwqs_gaussian_group_lasso <- "data {
+
+int<lower=0> N;              // number of individual samples
+
+int<lower=0> C1;             // number of element of first mix
+int<lower=0> C2;             // number of element of second mix
+int<lower=0> C3;             // number of element of third mix
+int<lower=0> C4;             // number of element of fourth mix
+int<lower=0> C5;             // number of element of fifth mix
+int<lower=0> C6;             // number of element of sixth mix
+int<lower=0> C7;             // number of element of seventh mix
+int<lower=0> C8;             // number of element of eighth mix
+
+
+int<lower=0> G;              // number of Groups
+int<lower=0> K;              // number of Confounders
+
+
+matrix[N,C1] XC1;           // matrix of first mix
+matrix[N,C2] XC2;           // matrix of second mix
+matrix[N,C3] XC3;           // matrix of third mix
+matrix[N,C4] XC4;           // matrix of fourth mix
+matrix[N,C5] XC5;           // matrix of fifth mix
+matrix[N,C6] XC6;           // matrix of sixth mix
+matrix[N,C7] XC7;           // matrix of seventh mix
+matrix[N,C8] XC8;           // matrix of eighth mix
+
+matrix[N,K] KV;	            // matrix of Confounders
+
+
+vector[C1] DalpC1;           // vector of the Dirichlet coefficients for first mix
+vector[C2] DalpC2;           // vector of the Dirichlet coefficients for second mix
+vector[C3] DalpC3;           // vector of the Dirichlet coefficients for third mix
+vector[C4] DalpC4;           // vector of the Dirichlet coefficients for fourth mix
+vector[C5] DalpC5;           // vector of the Dirichlet coefficients for fifth mix
+vector[C6] DalpC6;           // vector of the Dirichlet coefficients for sixth mix
+vector[C7] DalpC7;           // vector of the Dirichlet coefficients for seventh mix
+vector[C8] DalpC8;           // vector of the Dirichlet coefficients for eighth mix
+
+real y[N];                   // outcome is a gaussian variable
+}
+
+parameters {
+
+real <lower=0> sigma;                   // variance of the outcome
+real mu;                                // intercept
+vector[G] beta;                         // individual mixture-coefficients by groups
+vector[K] delta;                        // coefficients for the confounders
+vector<lower=0>[G] tau_squared;         // Varinces for each group mixture coefficients 
+real<lower=0> lambda_squared;           // penalization term
+
+simplex[C1] WC1;          // weights of first mixture group
+simplex[C2] WC2;          // weights of second mixture group
+simplex[C3] WC3;          // weights of third mixture group
+simplex[C4] WC4;          // weights of fourth mixture group
+simplex[C5] WC5;          // weights of fifth mixture group
+simplex[C6] WC6;          // weights of sixth mixture group
+simplex[C7] WC7;          // weights of seventh mixture group
+simplex[C8] WC8;          // weights of eighth mixture group
+}
+transformed parameters {
+
+vector[N] Xb;
+
+Xb = mu + (XC1*WC1)*beta[1] + (XC2*WC2)*beta[2] + (XC3*WC3)*beta[3] + (XC4*WC4)*beta[4] + (XC5*WC5)*beta[5] + (XC6*WC6)*beta[6] + (XC7*WC7)*beta[7] + (XC8*WC8)*beta[8] + KV*delta;
+}
+model {
+
+mu ~ normal(0, G);
+sigma ~ inv_gamma(0.01,0.01);
+lambda_squared ~ gamma(2,0.5);
+
+tau_squared[1] ~ gamma((C1+1)/2.0, (lambda_squared)/2);
+tau_squared[2] ~ gamma((C2+1)/2.0, (lambda_squared)/2);
+tau_squared[3] ~ gamma((C3+1)/2.0, (lambda_squared)/2);
+tau_squared[4] ~ gamma((C4+1)/2.0, (lambda_squared)/2);
+tau_squared[5] ~ gamma((C5+1)/2.0, (lambda_squared)/2);
+tau_squared[6] ~ gamma((C6+1)/2.0, (lambda_squared)/2);
+tau_squared[7] ~ gamma((C7+1)/2.0, (lambda_squared)/2);
+tau_squared[8] ~ gamma((C8+1)/2.0, (lambda_squared)/2); 
+
+beta ~ multi_normal(rep_vector(0,G),diag_matrix(tau_squared));
+
+for(j in 1:K) delta[j] ~ normal(0,K);
+
+WC1 ~ dirichlet(DalpC1);
+WC2 ~ dirichlet(DalpC2);
+WC3 ~ dirichlet(DalpC3);
+WC4 ~ dirichlet(DalpC4);
+WC5 ~ dirichlet(DalpC5);
+WC6 ~ dirichlet(DalpC6);
+WC7 ~ dirichlet(DalpC7);
+WC8 ~ dirichlet(DalpC8);
+
+y ~  normal(Xb, sigma);
+
+}
+
+"
+m_lasso_data_challenge <- rstan::stan_model(model_code =  model_bwqs_gaussian_group_lasso)
+
+## Application with Data
+
+Metals <- exposome[,c('hs_as_m_Log2','hs_cd_m_Log2','hs_co_m_Log2', 'hs_cs_m_Log2',
+                      'hs_cu_m_Log2','hs_hg_m_Log2','hs_mn_m_Log2','hs_mo_m_Log2','hs_pb_m_Log2')]
+
+OC_Pesticides <- exposome[,c('hs_dde_madj_Log2','hs_ddt_madj_Log2','hs_hcb_madj_Log2')]
+
+PCBs <- exposome[,c('hs_pcb118_madj_Log2', 'hs_pcb138_madj_Log2', 'hs_pcb153_madj_Log2', 
+                    'hs_pcb170_madj_Log2','hs_pcb180_madj_Log2')]
+
+OP_Pesticides <- exposome[,c('hs_dep_madj_Log2','hs_detp_madj_Log2','hs_dmp_madj_Log2','hs_dmtp_madj_Log2')]
+
+PBDEs <- exposome[,c('hs_pbde153_madj_Log2','hs_pbde47_madj_Log2')]
+
+PFAS <- exposome[,c('hs_pfhxs_m_Log2','hs_pfna_m_Log2','hs_pfoa_m_Log2','hs_pfos_m_Log2','hs_pfunda_m_Log2')]
+
+Phenols <- exposome[,c('hs_bpa_madj_Log2','hs_bupa_madj_Log2','hs_etpa_madj_Log2','hs_mepa_madj_Log2',
+                       'hs_oxbe_madj_Log2','hs_prpa_madj_Log2', 'hs_trcs_madj_Log2')]
+
+Phthalates <- exposome[,c('hs_mbzp_madj_Log2', 'hs_mecpp_madj_Log2','hs_mehhp_madj_Log2',
+                          'hs_mehp_madj_Log2','hs_meohp_madj_Log2','hs_mep_madj_Log2',
+                          'hs_mibp_madj_Log2', 'hs_mnbp_madj_Log2','hs_ohminp_madj_Log2',
+                          'hs_oxominp_madj_Log2')]
+
+Diet <- exposome[c('h_cereal_preg_Ter','h_dairy_preg_Ter','h_fastfood_preg_Ter','h_fish_preg_Ter','h_folic_t1_None',
+                   'h_fruit_preg_Ter','h_legume_preg_Ter','h_meat_preg_Ter','h_veg_preg_Ter')]
+
+Diet <- Diet %>% mutate_each_(funs(as.numeric), colnames(Diet)[colnames(Diet) != c('h_folic_t1_None')])
+Diet$h_folic_t1_None <- as.numeric(as.character(Diet$h_folic_t1_None))
+
+
+all_exposures_matrix <- cbind(Metals,OC_Pesticides,PCBs,OP_Pesticides,PBDEs,PFAS,Phenols,Phthalates)
+all_exposures_matrix$outcome <-  phenotype$hs_zbmi_who  
+all_exposures_matrix <- cbind(all_exposures_matrix,covariates[,c('h_mbmi_None','h_age_None','h_cohort','h_edumc_None',
+                                                                 'h_parity_None')], Diet[,c('h_cereal_preg_Ter','h_dairy_preg_Ter','h_fastfood_preg_Ter','h_fish_preg_Ter','h_folic_t1_None',
+                                      'h_fruit_preg_Ter','h_legume_preg_Ter','h_meat_preg_Ter','h_veg_preg_Ter')])
+
+
+data <- all_exposures_matrix
+
+q = 4 # modeling as quartiles
+G = 8 # There are 8 chemical groups
+
+y_name  <- "outcome"
+
+formula = as.formula(outcome ~ h_mbmi_None + h_age_None + h_cohort + h_edumc_None + h_parity_None  + h_fish_preg_Ter)
+
+KV_name <- all.vars(formula)[-1]
+
+mix_name_1 <- c('hs_as_m_Log2','hs_cd_m_Log2','hs_co_m_Log2', 'hs_cs_m_Log2',
+                'hs_cu_m_Log2','hs_hg_m_Log2','hs_mn_m_Log2','hs_mo_m_Log2','hs_pb_m_Log2')
+
+mix_name_2 <- c('hs_dde_madj_Log2','hs_ddt_madj_Log2','hs_hcb_madj_Log2')
+
+mix_name_3 <- c('hs_pcb118_madj_Log2', 'hs_pcb138_madj_Log2', 'hs_pcb153_madj_Log2', 
+                'hs_pcb170_madj_Log2','hs_pcb180_madj_Log2')
+
+mix_name_4 <- c('hs_dep_madj_Log2','hs_detp_madj_Log2','hs_dmp_madj_Log2','hs_dmtp_madj_Log2')
+
+mix_name_5 <- c('hs_pbde153_madj_Log2','hs_pbde47_madj_Log2')
+
+mix_name_6 <- c('hs_pfhxs_m_Log2','hs_pfna_m_Log2','hs_pfoa_m_Log2','hs_pfos_m_Log2','hs_pfunda_m_Log2')
+
+mix_name_7 <- c('hs_bpa_madj_Log2','hs_bupa_madj_Log2','hs_etpa_madj_Log2','hs_mepa_madj_Log2',
+                'hs_oxbe_madj_Log2','hs_prpa_madj_Log2', 'hs_trcs_madj_Log2')
+
+mix_name_8 <- c('hs_mbzp_madj_Log2', 'hs_mecpp_madj_Log2','hs_mehhp_madj_Log2',
+                'hs_mehp_madj_Log2','hs_meohp_madj_Log2','hs_mep_madj_Log2',
+                'hs_mibp_madj_Log2', 'hs_mnbp_madj_Log2','hs_ohminp_madj_Log2',
+                'hs_oxominp_madj_Log2')
+
+
+X1 = BWQS::quantile_split(data=data,mix_name=mix_name_1,q)[,mix_name_1]
+X2 = BWQS::quantile_split(data=data,mix_name=mix_name_2,q)[,mix_name_2]
+X3 = BWQS::quantile_split(data=data,mix_name=mix_name_3,q)[,mix_name_3]
+X4 = BWQS::quantile_split(data=data,mix_name=mix_name_4,q)[,mix_name_4]
+X5 = BWQS::quantile_split(data=data,mix_name=mix_name_5,q)[,mix_name_5]
+X6 = BWQS::quantile_split(data=data,mix_name=mix_name_6,q)[,mix_name_6]
+X7 = BWQS::quantile_split(data=data,mix_name=mix_name_7,q)[,mix_name_7]
+X8 = BWQS::quantile_split(data=data,mix_name=mix_name_8,q)[,mix_name_8]
+
+data_reg <- list(
+  
+  N   = nrow(data),
+  
+  C1  = length(mix_name_1),
+  C2  = length(mix_name_2), C2  = length(mix_name_2), C3  = length(mix_name_3),
+  C4  = length(mix_name_4), C5  = length(mix_name_5), C6  = length(mix_name_6),
+  C7  = length(mix_name_7), C8  = length(mix_name_8),
+  
+  XC1 = cbind(X1), XC2 = cbind(X2), XC3 = cbind(X3), XC4 = cbind(X4),  
+  XC5 = cbind(X5), XC6 = cbind(X6), XC7 = cbind(X7),  XC8 = cbind(X8),
+  
+  DalpC1 = rep(1, length(mix_name_1)),
+  DalpC2 = rep(1, length(mix_name_2)),
+  DalpC3 = rep(1, length(mix_name_3)),
+  DalpC4 = rep(1, length(mix_name_4)),
+  DalpC5 = rep(1, length(mix_name_5)),
+  DalpC6 = rep(1, length(mix_name_6)),
+  DalpC7 = rep(1, length(mix_name_7)),
+  DalpC8 = rep(1, length(mix_name_8)),
+  
+  G = 8,
+  
+  KV = data[,KV_name],
+  K   = length(KV_name),
+  
+  y = as.vector(data[,y_name])
+)
+
+
+fit_lasso <- rstan::sampling(m_lasso_data_challenge,
+                             data = data_reg,
+                             chains = 4,
+                             iter = 1e4,
+                             thin = 1,
+                             refresh = 0, verbose = T,
+                             control=list(max_treedepth = 20,
+                                          adapt_delta = 0.999999999999999))
+
+sum_fit_lasso <- round(summary(fit_lasso, probs = c(0.025, 0.975))$summary,4)
+
+bwqs_table <- as.data.frame(sum_fit_lasso)
+bwqs_main_results <- bwqs_table[1:78,]
+print(bwqs_main_results)
+
+
+## Forest Plot and Corresponding Weights
+
+label <- c("Metals","OC Pesticides","PCBs","OP Pesticides","PBDEs","PFAS","Phenols","Phthalates")
+mean  <-  bwqs_main_results[rownames(bwqs_main_results) 
+                            %in% c("beta[1]","beta[2]", "beta[3]", "beta[4]",      
+                                   "beta[5]","beta[6]","beta[7]", "beta[8]" ) ,c("mean")]
+lower <- bwqs_main_results[rownames(bwqs_main_results) 
+                           %in% c("beta[1]","beta[2]", "beta[3]", "beta[4]",      
+                                  "beta[5]","beta[6]","beta[7]", "beta[8]" ),c("2.5%")]
+upper <- bwqs_main_results[rownames(bwqs_main_results) 
+                           %in% c("beta[1]","beta[2]", "beta[3]", "beta[4]",      
+                                  "beta[5]","beta[6]","beta[7]", "beta[8]" ),c("97.5%")]
+
+df <- data.frame(label, mean, lower, upper)
+df$label <- factor(df$label, levels=(df$label))
+
+fp <- ggplot(data=df, aes(x=label, y=mean, ymin=lower, ymax=upper)) +
+  geom_pointrange(size = 1) + labs(title = "Forest Plot") +
+  geom_hline(yintercept=0, lty=2) +  
+  coord_flip() +  
+  xlab("Chemical Groups") + ylab("Estimated Group Association (95% CI)") +
+  theme_bw()  +  theme(plot.title=element_text(size=16,face="bold"),
+                       axis.text.x=element_text(face="bold"),
+                       axis.text.y = element_text(face = "bold"),
+                       axis.title=element_text(size=12,face="bold"))
+
+
+
+prenatal_exposures_bar <- data.frame(Chemicals = c(colnames(Metals),colnames(OC_Pesticides),colnames(PCBs)), 
+                                     Groups = c(rep("Metals",ncol(Metals)),rep("OC Pesticides",ncol(OC_Pesticides))
+                                                ,rep("PCBs",ncol(PCBs))), 
+                                     Mean_log_conc = bwqs_main_results[rownames(bwqs_main_results) 
+                           %in% c("WC1[1]","WC1[2]","WC1[3]", "WC1[4]","WC1[5]","WC1[6]","WC1[7]",
+                                  "WC1[8]","WC1[9]","WC2[1]", "WC2[2]","WC2[3]","WC3[1]","WC3[2]","WC3[3]",       
+                                      "WC3[4]","WC3[5]"),"mean"])
+
+
+prenatal_exposures_bar$Chemicals <- factor(prenatal_exposures_bar$Chemicals, levels = prenatal_exposures_bar$Chemicals)
+
+p <- (ggplot(prenatal_exposures_bar, aes(x=Chemicals, y=Mean_log_conc, fill=Groups)) + 
+        geom_bar(stat="identity", position=position_dodge()) + 
+        labs(title = "Estimated Weights from\nPenalized Group BWQS", 
+             x = "Chemical Exposures", y = "Estimated Weights") 
+      +  scale_fill_brewer(palette="Paired"))
+
+pm = (p  +  geom_segment(aes(x = 0.5, y = 1/9, xend = 9.5, yend = 1/9), color = "red",lwd = 1) 
+      +  geom_segment(aes(x = 9.5, y = 1/3, xend = 12.5, yend = 1/3), color = "red", lwd = 1)
+      +  geom_segment(aes(x = 12.5, y = 1/5, xend = 17.5, yend = 1/5), color = "red", lwd = 1))
+
+
+pm <- pm + theme(plot.title=element_text(size=16,face="bold"),
+                 axis.text.y=element_blank(),
+                 axis.ticks.y=element_blank(),
+                 axis.text.x=element_blank(),
+                 axis.title=element_text(size=12,face="bold"),
+                 strip.text.y = element_text(hjust=0,vjust = 1,angle=180,face="bold"),
+                 legend.position="bottom") 
+
+pm <- pm + annotate("text", x = c(1,2,3,12,16), y=c(0.2,0.25,0.35, 0.75,0.65), 
+                    label = c("Arsenic", "Cadmium","Cobalt","HCB","PCB-170"),size = 5,angle = 90)
+
+
+ggpubr::ggarrange(fp,pm,ncol = 2,nrow = 1,common.legend = T, legend = "bottom")
+
+
+
