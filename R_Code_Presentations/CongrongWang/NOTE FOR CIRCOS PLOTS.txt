@@ -1,0 +1,3 @@
+We generated circular plots using the free circos software (http://circos.ca/), using a similar strategy as described here: https://github.com/rossellaalfano/Circular-plots/
+We provided the full R script we used and also the configuration files (that can be found in the folder config_files_circos).  
+
