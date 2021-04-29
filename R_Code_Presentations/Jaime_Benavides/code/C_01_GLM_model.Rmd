@@ -1,0 +1,387 @@
+---
+title: "GLM_models.Rmd"
+author: "Jaime Benavides"
+date: "4/14/2021"
+output: html_document
+---
+Objective:  build health models health models (1. all 8 factors, 2. prenatal factors, and if time permits 3. postnatal ones, 4. traffic for sensitivity analysis)
+
+```{r include=FALSE}
+# add folder locations
+source(here::here("code/0_01_init_directory_structure.R"))
+
+# load packages
+# list packages needed:
+list.of.packages = c('tidyverse', 'haven','ggplot2','GGally','caret','readr',
+                     'fBasics','raster', 'nortest','MASS','extrafont', 'forestplot',
+                     'ggsn','survival','grid','gridExtra', 'cowplot','reshape2',
+                     'naniar','rpart','rpart.plot','pROC', 'RColorBrewer', 'broom',
+                     'car','olsrr','EnvStats','janitor','tableone', 'reshape', 
+                     'magrittr', 'tidyselect', 'dplyr', 'tidyr', 'stringr', 'purrr', 'tibble',
+                     'pracma', 'Matrix', 'foreach', 'iterators', 'parallel', 'snow', 'doSNOW',
+                     'GPfit', 'heatmaply', 'kableExtra', 'mgcv', 'glmnet')
+
+# check if list of packages is installed. if not, it will install ones not yet installed:
+new.packages <- list.of.packages[!(list.of.packages %in% installed.packages()[,"Package"])]
+if(length(new.packages)) install.packages(new.packages)
+
+# import packages:
+lapply(list.of.packages, require, character.only = TRUE)
+```
+
+## Load data
+
+### a. Load datasets
+
+```{r}
+# load raw challenge data 
+load(paste0(raw.data.folder, "exposome_v2.RData")) 
+# load processed challenge data 
+load(paste0(generated.data.folder, "exposome_pren_postnatal.RData")) 
+# load pre- and postnatal factors 
+load(paste0(generated.data.folder, "health_model_patterns.RData"))
+# scores are NOT organized by cohort as they are in the knitted report HTML files, but rather by the order of the original pre and post natal scaled data matrices
+pren_factors <- factors$pre$scores[]
+post_factors <- factors$post$scores[]
+
+colnames(pren_factors) <- paste0("pren_", colnames(pren_factors))
+colnames(post_factors) <- paste0("post_", colnames(post_factors))
+#check if same order
+any(row.names(post_factors) !=row.names(pren_factors))
+
+all_factors <- cbind(pren_factors, post_factors)
+# scale factors
+all_factors <- scale(all_factors, center = FALSE, scale = apply(all_factors, 2, sd, na.rm = TRUE))
+```
+
+
+## Confounders & Outcome
+
+Potential Confounders: 
+
+Child sex
+Child age
+Pre- pregnancy maternal bmi
+Weigh of child (6-11yrs)
+Heigh of child (6-11 yrs)
+Maternal weight gain during pregnancy
+Gestational age
+Maternal age
+Cohort
+Maternal education
+Native
+Parity
+Family affluence scale
+
+Outcome:
+
+Child Behavior Checklist (CBCL) --> hs_Gen_Tot
+
+
+```{r}
+# outcome 
+cbcl <- phenotype %>%
+  dplyr::select(ID, hs_Gen_Tot)
+
+# explore outcome
+hist(cbcl$hs_Gen_Tot);abline(v=mean(cbcl$hs_Gen_Tot), col="red") #right skewed distribution
+mean(cbcl$hs_Gen_Tot)
+var(cbcl$hs_Gen_Tot) #variance greater than mean
+
+# covariates
+covariates <- dplyr::left_join(covariates[,
+c("ID", "h_cohort", "hs_child_age_None", "e3_sex_None", "h_edumc_None", "h_parity_None", "h_native_None", "e3_gac_None", "h_age_None")], exposome[, c("ID", "FAS_cat_None",  "e3_asmokcigd_p_None")], by = "ID")
+summary(covariates)
+
+# bind data
+outcome_conf <- full_join(cbcl, covariates, by = "ID")
+
+dta <- data.frame(ID = as.numeric(row.names(all_factors))) %>%
+  cbind(all_factors) %>%
+  dplyr::left_join(outcome_conf, by = 'ID') 
+```
+
+### Factors correlation 
+
+```{r}
+
+cor_mat <- dta[,-1]  %>% GGally::ggcorr(., method = "pairwise.complete.obs", 
+                                  limits = F, label = FALSE, label_size = 3, label_alpha = T, 
+                                  size = 3, layout.exp = 1, hjust = 0.75, color = "grey50")
+cor_mat
+
+```
+
+###  see if each factor is associated with cohort. it is still possible that a cohort does have eg higher traffic etc. so check means and variances of each factor by cohort. and maybe an anova?
+```{r}
+dta_dist <- dta %>%
+  pivot_longer(cols = starts_with(c("pren", "post")), names_to = "factor", values_to = "factor_value")
+p <- ggplot(na.omit(dta_dist), aes(x=e3_sex_None, y=factor_value, fill = factor)) + 
+  geom_boxplot() 
+p
+p <- ggplot(na.omit(dta_dist), aes(x=h_edumc_None, y=factor_value, fill = factor)) + 
+  geom_boxplot() 
+p
+p <- ggplot(na.omit(dta_dist), aes(x=h_parity_None, y=factor_value, fill = factor)) + 
+  geom_boxplot() 
+p
+p <- ggplot(na.omit(dta_dist), aes(x=h_native_None, y=factor_value, fill = factor)) + 
+  geom_boxplot() 
+p
+p <- ggplot(na.omit(dta_dist), aes(x=FAS_cat_None, y=factor_value, fill = factor)) + 
+  geom_boxplot() 
+p
+p <- ggplot(na.omit(dta_dist), aes(x=h_cohort, y=factor_value, fill = factor)) + 
+  geom_boxplot() 
+p
+#f_pren_1_coh <- lm(pren_MR1 ~ h_cohort, data = dta)
+#summary(f_pren_1_coh)
+#p <- ggplot(na.omit(dta), aes(x=h_cohort, y=pren_MR1)) + 
+#  geom_boxplot() 
+#p
+```
+
+
+### Run a linear model for each exposure
+
+```{r}
+# pm2.5 
+dta_expo <- cbind(dta, pren_exposome, post_exposome)
+pm2p5_model <- glm(hs_Gen_Tot ~ hs_pm25_yr_hs_h + 
+                        h_cohort + 
+                      hs_child_age_None + e3_sex_None + e3_gac_None + FAS_cat_None + e3_asmokcigd_p_None + 
+                        h_edumc_None + h_parity_None + h_native_None + h_age_None,
+                    family = "quasipoisson",   # distribution family
+                    data = dta_expo)
+summary(pm2p5_model)
+# no2
+no2_model <- glm(hs_Gen_Tot ~ hs_no2_yr_hs_h + 
+                        h_cohort + 
+                      hs_child_age_None + e3_sex_None + e3_gac_None + FAS_cat_None + e3_asmokcigd_p_None + 
+                        h_edumc_None + h_parity_None + h_native_None + h_age_None,
+                    family = "quasipoisson",   # distribution family
+                    data = dta_expo)
+summary(no2_model)
+# population density
+popdens_model <- glm(hs_Gen_Tot ~ hs_popdens_h + 
+                        h_cohort + 
+                      hs_child_age_None + e3_sex_None + e3_gac_None + FAS_cat_None + e3_asmokcigd_p_None + 
+                        h_edumc_None + h_parity_None + h_native_None + h_age_None,
+                    family = "quasipoisson",   # distribution family
+                    data = dta_expo)
+summary(popdens_model)
+# building density
+buildens_model <- glm(hs_Gen_Tot ~ hs_builtdens300_h + 
+                        h_cohort + 
+                      hs_child_age_None + e3_sex_None + e3_gac_None + FAS_cat_None + e3_asmokcigd_p_None + 
+                        h_edumc_None + h_parity_None + h_native_None + h_age_None,
+                    family = "quasipoisson",   # distribution family
+                    data = dta_expo)
+summary(buildens_model)
+
+```
+
+### Building health model for all factors
+
+```{r}
+
+health_model_all <- glm(hs_Gen_Tot ~ pren_MR1 + pren_MR2 + pren_MR3 + pren_MR4 + 
+                      post_MR1 + post_MR2 + post_MR3 +post_MR4 +
+                        h_cohort + 
+                      hs_child_age_None + e3_sex_None + e3_gac_None + FAS_cat_None + e3_asmokcigd_p_None + 
+                        h_edumc_None + h_parity_None + h_native_None + h_age_None,
+                    family = "quasipoisson",   # distribution family
+                    data = dta)
+
+
+summary(health_model_all)
+
+
+
+health_model_all %>% broom::tidy() %>% as.tibble() %>% filter(grepl("MR", term)) %>%
+  dplyr::mutate(estimate = estimate, std.error = std.error) %>%
+  ggplot(aes(x = term, y = estimate, color = term,
+             ymin = estimate - 1.96*std.error,
+             ymax = estimate + 1.96*std.error)) +
+  geom_pointrange() + theme_bw() +
+  geom_hline(yintercept = 0, color = "red", linetype = "dashed") +
+  theme(legend.position = "none") + coord_flip() +
+  labs(y = "Estimate", x = "Factor", title = "Association between prenatal and postnatal factors and CBCL")
+
+
+# Calculate the impact on the CBCL score arising from a one unit increase along the factors. First we take the exponential of the coefficients.
+health_model_all %>% broom::tidy() %>% as.tibble() %>% filter(grepl("MR", term)) %>%
+  dplyr::mutate(c_i_2p5 = exp(estimate - 1.96*std.error), 
+                c_i_97p5 = exp(estimate + 1.96*std.error),
+                estimate = exp(estimate), std.error = exp(std.error)) %>%
+  ggplot(aes(x = term, y = estimate, color = term,
+             ymin = c_i_2p5,
+             ymax = c_i_97p5)) +
+  geom_pointrange() + theme_bw() +
+  geom_hline(yintercept = 1, color = "red", linetype = "dashed") +
+  theme(legend.position = "none") + coord_flip() +
+  labs(y = "Rate ratio", x = "Factor", title = "Association between prenatal and postnatal factors and CBCL")
+
+```
+
+### Building health model for prenatal factors
+
+```{r}
+
+health_model_pren <- glm(hs_Gen_Tot ~ pren_MR1 + pren_MR2 + pren_MR3 + pren_MR4 + 
+                          hs_child_age_None + e3_sex_None + e3_gac_None + FAS_cat_None +  e3_asmokcigd_p_None + 
+                                                   h_cohort + 
+                          h_edumc_None + h_parity_None + h_native_None + h_age_None,
+                        family = "quasipoisson",   # distribution family
+                        data = dta)
+
+
+summary(health_model_pren)
+
+
+health_model_pren %>% broom::tidy() %>% as.tibble() %>% filter(grepl("MR", term)) %>%
+  dplyr::mutate(estimate = estimate, std.error = std.error) %>%
+  ggplot(aes(x = term, y = estimate, color = term,
+             ymin = estimate - 1.96*std.error,
+             ymax = estimate + 1.96*std.error)) +
+  geom_pointrange() + theme_bw() +
+  geom_hline(yintercept = 0, color = "red", linetype = "dashed") +
+  theme(legend.position = "none") + coord_flip() +
+  labs(y = "Estimate", x = "Factor", title = "Association between prenatal factors and CBCL")
+
+
+# Calculate the impact on the CBCL score arising from a one unit increase along the factors. First we take the exponential of the coefficients.
+health_model_pren %>% broom::tidy() %>% as.tibble() %>% filter(grepl("MR", term)) %>%
+  dplyr::mutate(c_i_2p5 = exp(estimate - 1.96*std.error),
+                c_i_97p5 = exp(estimate + 1.96*std.error),
+                estimate = exp(estimate), std.error = exp(std.error)) %>%
+  ggplot(aes(x = term, y = estimate, color = term,
+             ymin = c_i_2p5,
+             ymax = c_i_97p5)) +
+  geom_pointrange() + theme_bw() +
+  geom_hline(yintercept = 1, color = "red", linetype = "dashed") +
+  theme(legend.position = "none") + coord_flip() +
+  labs(y = "Rate ratio", x = "Factor", title = "Association between prenatal factors and CBCL")
+
+```
+
+### Building health model for postnatal factors
+
+```{r}
+
+health_model_post <- glm(hs_Gen_Tot ~ post_MR1 + post_MR2 + post_MR3 + post_MR4 + 
+                           hs_child_age_None + e3_sex_None + e3_gac_None + FAS_cat_None + e3_asmokcigd_p_None +  
+                                                   h_cohort + 
+                           h_edumc_None + h_parity_None + h_native_None + h_age_None,
+                         family = "quasipoisson",   # distribution family
+                         data = dta)
+
+
+summary(health_model_post)
+
+
+health_model_post %>% broom::tidy() %>% as.tibble() %>% filter(grepl("MR", term)) %>%
+  dplyr::mutate(estimate = estimate, std.error = std.error) %>%
+  ggplot(aes(x = term, y = estimate, color = term,
+             ymin = estimate - 1.96*std.error,
+             ymax = estimate + 1.96*std.error)) +
+  geom_pointrange() + theme_bw() +
+  geom_hline(yintercept = 0, color = "red", linetype = "dashed") +
+  theme(legend.position = "none") + coord_flip() +
+  labs(y = "Estimate", x = "Factor", title = "Association between postnatal factors and CBCL")
+
+
+# Calculate the impact on the CBCL score arising from a one unit increase along the factors. First we take the exponential of the coefficients.
+health_model_post %>% broom::tidy() %>% as.tibble() %>% filter(grepl("MR", term)) %>%
+  dplyr::mutate(c_i_2p5 = exp(estimate - 1.96*std.error), 
+                c_i_97p5 = exp(estimate + 1.96*std.error),
+                estimate = exp(estimate), std.error = exp(std.error)) %>%
+  ggplot(aes(x = term, y = estimate, color = term,
+             ymin = c_i_2p5,
+             ymax = c_i_97p5)) +
+  geom_pointrange() + theme_bw() +
+  geom_hline(yintercept = 1, color = "red", linetype = "dashed") +
+  theme(legend.position = "none") + coord_flip() +
+  labs(y = "Rate ratio", x = "Factor", title = "Association between postnatal factors and CBCL")
+
+```
+
+
+### Building health model for traffic factors
+
+```{r}
+health_model_traffic <- glm(hs_Gen_Tot ~ pren_MR1 + post_MR1 +  
+                           hs_child_age_None + e3_sex_None + e3_gac_None + FAS_cat_None +  e3_asmokcigd_p_None + 
+                                                     h_cohort + 
+                           h_edumc_None + h_parity_None + h_native_None + h_age_None,
+                         family = "quasipoisson",   # distribution family
+                         data = dta)
+
+
+summary(health_model_traffic)
+
+health_model_traffic %>% broom::tidy() %>% as.tibble() %>% filter(grepl("MR", term)) %>%
+  dplyr::mutate(estimate = estimate, std.error = std.error) %>%
+  ggplot(aes(x = term, y = estimate, color = term,
+             ymin = estimate - 1.96*std.error,
+             ymax = estimate + 1.96*std.error)) +
+  geom_pointrange() + theme_bw() +
+  geom_hline(yintercept = 0, color = "red", linetype = "dashed") +
+  theme(legend.position = "none") + coord_flip() +
+  labs(y = "Estimate", x = "Factor", title = "Association between traffic factors and CBCL")
+
+
+# Calculate the impact on the CBCL score arising from a one unit increase along the factors. First we take the exponential of the coefficients.
+health_model_traffic %>% broom::tidy() %>% as.tibble() %>% filter(grepl("MR", term)) %>%
+  dplyr::mutate(c_i_2p5 = exp(estimate - 1.96*std.error), 
+                c_i_97p5 = exp(estimate + 1.96*std.error),
+                estimate = exp(estimate), std.error = exp(std.error)) %>%
+  ggplot(aes(x = term, y = estimate, color = term,
+             ymin = c_i_2p5,
+             ymax = c_i_97p5)) +
+  geom_pointrange() + theme_bw() +
+  geom_hline(yintercept = 1, color = "red", linetype = "dashed") +
+  theme(legend.position = "none") + coord_flip() +
+  labs(y = "Rate ratio", x = "Factor", title = "Association between traffic Factors and CBCL")
+
+```
+
+### Building health model for urbanicity factors
+
+```{r}
+
+health_model_urbanicity <- glm(hs_Gen_Tot ~ pren_MR2 + post_MR2 +  
+                              hs_child_age_None + e3_sex_None + e3_gac_None + FAS_cat_None + e3_asmokcigd_p_None + 
+                                                        h_cohort + 
+                              h_edumc_None + h_parity_None + h_native_None + h_age_None,
+                            family = "quasipoisson",   # distribution family
+                            data = dta)
+
+
+summary(health_model_urbanicity)
+
+health_model_urbanicity %>% broom::tidy() %>% as.tibble() %>% filter(grepl("MR", term)) %>%
+  dplyr::mutate(estimate = estimate, std.error = std.error) %>%
+  ggplot(aes(x = term, y = estimate, color = term,
+             ymin = estimate - 1.96*std.error,
+             ymax = estimate + 1.96*std.error)) +
+  geom_pointrange() + theme_bw() +
+  geom_hline(yintercept = 0, color = "red", linetype = "dashed") +
+  theme(legend.position = "none") + coord_flip() +
+  labs(y = "Estimate", x = "Factor", title = "Association between traffic factors and CBCL")
+
+
+# Calculate the impact on the CBCL score arising from a one unit increase along the factors. First we take the exponential of the coefficients.
+health_model_urbanicity %>% broom::tidy() %>% as.tibble() %>% filter(grepl("MR", term)) %>%
+  dplyr::mutate(c_i_2p5 = exp(estimate - 1.96*std.error), 
+                c_i_97p5 = exp(estimate + 1.96*std.error),
+                estimate = exp(estimate), std.error = exp(std.error)) %>%
+  ggplot(aes(x = term, y = estimate, color = term,
+             ymin = c_i_2p5,
+             ymax = c_i_97p5)) +
+  geom_pointrange() + theme_bw() +
+  geom_hline(yintercept = 1, color = "red", linetype = "dashed") +
+  theme(legend.position = "none") + coord_flip() +
+  labs(y = "Rate ratio", x = "Factor", title = "Association between traffic Factors and CBCL")
+
+```
