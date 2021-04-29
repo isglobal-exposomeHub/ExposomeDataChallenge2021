@@ -1,0 +1,566 @@
+---
+title: 'Searching for the risk factors for childhood overweight - An approach to identify the most relevant child BMI-associated exposures'
+author: "Lucile Broseus & Paulina Jedynak"
+date: "April 2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = F, message = F, 
+                      fig.align = "center", out.width='80%', fig.asp=.75)
+```
+
+```{r, eval = TRUE, echo = FALSE}
+
+################################################################################
+# Path to raw exposome data
+# To be adapted
+#------------------------------------------------------------------------------#
+
+expDataFile <- "exposome.RData"
+
+################################################################################
+# R packages and custom functions
+#------------------------------------------------------------------------------#
+
+source(paste(here::here(),"Rfunctions.R", sep = "/"))
+
+################################################################################
+# Create output directory
+#------------------------------------------------------------------------------#
+
+dir.create(paste(here::here(),"Results", sep = "/"))
+
+################################################################################
+# Set seed (for random forests)
+#------------------------------------------------------------------------------#
+
+set.seed(38)
+
+```
+
+# Background
+
+Exposure to several factors (e.g., lifestyle or chemical exposures) may influence the body balance between energy intake and energy expenditure. This in turn can result in an increase of the body mass index (BMI) that has been associated with an elevated risk of different health problems. Importantly, excessive weight during childhood is likely to result in future problems with weight control, leading to adult overweight and obesity. Existing studies aiming to pinpoint the factors associated with child BMI mostly focus on single exposures while multi-factor studies are scarce.
+
+# Objective
+
+To assess associations between several early-life factors considered simultaneously and child BMI.
+
+# Methods
+
+Considering several factors at once, we will define ‘exposure profiles’ associated with excessive weight in children. We would like to assess the respective influence of each family of factors potentially affecting child BMI (chemical exposures vs. lifestyle) by defining and comparing family-specific profiles. We propose to use a multi-step approach to define a profile for each exposure family: both relying on *a priori* knowledge, unsupervised methods and on supervised learning applied to each exposure family (e.g., Random Forests, Binary Ordinal Search, depending on the underlying data distribution), we will extract an initial subset of variables able to predict BMI class.    
+We will then combine selected and curated predictors using ordinal random forests and ordinal logistic regression to assess their respective effect on child overweight and obesity risk.  
+In both steps, where possible, we will adjust our analyses for known confounding factors such as cohort origin. 
+
+```{r, eval = TRUE, echo = FALSE}
+################################################################################
+# Input data
+#------------------------------------------------------------------------------#
+
+#Load raw data
+load(expDataFile)
+
+#Extract phenotype of interest
+phenotype <- phenotype %>% dplyr::select(ID, chBMI.cat = hs_bmi_c_cat) 
+phenotype$chBMI.cat <- factor(phenotype$chBMI.cat)
+
+#Names of diet covariates
+diet.names <- codebook %>% 
+              dplyr::filter(subfamily=="Diet" & period == "Postnatal" & var_type == "factor") %>%
+              dplyr::select(variable_name, labelsshort)
+diet.names$labelsshort <- tapply(diet.names$labelsshort, 
+                                 1:nrow(diet.names), 
+                                 FUN = function(x) stringr::str_remove(x, pattern = " "))
+
+#Other lifestyle covariates (Allergens are discarded)
+other.names <- codebook %>% 
+               dplyr::filter( (subfamily=="Physical activity"| 
+                               subfamily=="Sleep" | 
+                               labelsshort=="KIDMED") & 
+                                period == "Postnatal") %>%
+               dplyr::select(variable_name, labelsshort)
+
+#Chemicals names
+chem.names <- codebook %>% 
+              dplyr::filter(domain=="Chemicals" & period == "Postnatal" & var_type == "numeric") %>%
+              dplyr::select(variable_name, labelsshort)
+
+#Confounders
+confounders.names <- data.frame(variable_names = c("h_mbmi_None", "h_edumc_None","h_cohort",
+                                                   "hs_child_age_None", "e3_sex_None",
+                                                   "weight_gain_cat"),
+                                labelsshort = c("mBMI", "mEducation", "cohort", 
+                                                "chAge", "chSex", 
+                                                "weightGain.cat"))
+                  
+```
+
+```{r, eval = TRUE, echo = FALSE}
+################################################################################
+# Prepare main data
+#------------------------------------------------------------------------------#
+
+# Lifestyle
+lifeStyle <- exposome[, c("ID", 
+                          as.vector(diet.names$variable_name), 
+                          as.vector(other.names$variable_name))]
+colnames(lifeStyle)[-1] <- c(as.vector(diet.names$labelsshort), 
+                            as.vector(other.names$labelsshort))
+
+
+lifeStyle[,as.vector(diet.names$labelsshort)] <- apply(lifeStyle[,as.vector(diet.names$labelsshort)],
+                                                       1:2, 
+                                                       FUN = tertile2class)
+lifeStyle[,as.vector(diet.names$labelsshort)] <- apply(lifeStyle[,as.vector(diet.names$labelsshort)],
+                                                       2, 
+                                                       FUN = as.factor)
+
+# FROM Paulina
+# Select and rename exposure variables
+chemicals <- exposome %>%
+             dplyr::select(ID, contains(c("_c_", "cdich", "cadj")) & !contains("fastfood")) %>%
+             dplyr::rename_at(vars(-ID), function(x) stringr::str_replace(x, "hs_", "")) %>%
+             dplyr::rename_at(vars(-ID), function(x) stringr::str_remove(x, "_.*")) %>%
+             # Set the reference lvel for dichotomised variables
+             dplyr::mutate_at(.vars = c("tl", "dmdtp", "cotinine"), ~relevel(., ref = "Undetected"))
+
+# Remove PCBs and DEHP metabolites so they are 'represented' by PCBs sum and DEHP metabolites sum
+chemicals <- chemicals %>% dplyr::select(!contains("pcb1")) %>%
+                           dplyr::select(!contains(c("mecpp", "meohp", "mehhp", "mehp")))
+
+# Confounders  
+covariates <- merge(covariates, 
+                    read.csv(paste(here::here(), "Data/covariates_sel.csv", sep = "/")),
+                    by = "ID")
+covariates <- covariates[, c("ID", as.vector(confounders.names$variable_name))]
+colnames(covariates)[-1] <- as.vector(confounders.names$labelsshort)
+
+################################################################################
+# Filter underweight children
+#------------------------------------------------------------------------------#
+
+uw.ID <- dplyr::filter(phenotype, chBMI.cat==1)$ID %>% as.character()
+
+lifeStyle <- lifeStyle %>% dplyr::filter(!(ID %in% uw.ID)) %>% dplyr::arrange(ID)
+chemicals <- chemicals %>% dplyr::filter(!(ID %in% uw.ID)) %>% dplyr::arrange(ID)
+phenotype <- phenotype %>% dplyr::filter(!(ID %in% uw.ID)) %>% dplyr::arrange(ID)
+covariates <- covariates %>% dplyr::filter(!(ID %in% uw.ID)) %>% dplyr::arrange(ID)
+
+```
+
+## Outcome: Child BMI category
+
+```{r, eval = TRUE, echo = FALSE}
+#------------------------------#
+# 
+#------------------------------#
+
+merge(phenotype, covariates, by = "ID") %>% 
+              ggplot(aes(x = cohort, fill = factor(chBMI.cat)))+ 
+              geom_bar(position = "dodge") + 
+              xlab("Cohort") +
+              ggtitle("BMI distribution by cohort") +
+              myTheme
+
+merge(phenotype, covariates, by = "ID") %>% 
+              ggplot(aes(x = cohort, fill = factor(chBMI.cat))) + 
+              scale_fill_discrete("BMI") +
+              geom_bar(position = "fill") + 
+              xlab("Cohort") +
+              ggtitle("BMI class distribution by cohort") +
+              myTheme
+
+cat("BMI class proportions \n")
+phenotype$chBMI.cat <- droplevels(phenotype$chBMI.cat)
+prop.bmi <- table(phenotype$chBMI.cat)/nrow(phenotype)*100
+prop.bmi
+```
+
+# Lifestyle exposome
+
+## Diet
+
+```{r, eval = TRUE, echo = FALSE}
+
+# Diet 
+diet <- lifeStyle[,c("ID", as.vector(diet.names$labelsshort))]
+
+```
+
+### Diet tertile distribution by BMI class
+
+```{r, eval = TRUE, echo = FALSE}
+#------------------------------#
+# Distribution of tertiles
+#------------------------------#
+
+diet.melt <- reshape2::melt(diet[,-2],id.vars = "ID")
+
+diet.melt <- merge(diet.melt, phenotype[, c("ID", "chBMI.cat")])
+
+diet.melt %>% 
+              ggplot(aes(x = chBMI.cat, fill = factor(value))) + 
+              geom_bar(position = "fill") + 
+              scale_fill_discrete("Tertile") +
+              facet_wrap(~variable) +
+              xlab("BMI") +
+              ggtitle("Diet covariate distribution by BMI") +
+              myTheme
+
+```
+
+### Multiple correspondence analysis (MCA)
+
+```{r, eval = TRUE, echo = FALSE}
+
+cat("MCA plot: Diet covariates, BMI as supplementary \n")
+
+M <- apply(cbind.data.frame(diet[,-c(1,2)],
+                            BMI = phenotype$chBMI.cat),2, as.factor)
+
+Lu_plotMCA(catMatrix = M, quali.sup = grep("BMI", x = colnames(M))) + myTheme
+  
+```
+
+We can cluster correlated diet covariates using PAM clustering on first MCA coordinates. Associations ("mixtures") between diet covariate levels are highlighted:
+
+```{r, eval = TRUE, echo = FALSE}
+
+cat("MCA plot: clusters of most associated diet covariates? \n")
+
+M <- apply(diet[,-c(1)],2, as.factor)
+M <- apply(M,2, as.factor)
+mca <- FactoMineR::MCA(M, graph = FALSE)
+
+pam <- fpc::pamk(data = mca$var$coord[, 1:2], metric = "euclidean", stand = FALSE)
+pam <- data.frame(cluster = pam$pamobject$clustering,
+                  MCA1 = mca$var$coord[,1],
+                  MCA2 = mca$var$coord[,2]) %>% 
+  dplyr::arrange(desc(cluster))
+
+pam %>% ggplot(aes(x = MCA1, y = MCA2, 
+                   col = factor(cluster),
+                   label = rownames(pam))) + 
+        geom_text(aes(colour = factor(cluster))) +
+        scale_color_discrete(name = "PAM cluster") +
+        geom_hline(yintercept = 0) + geom_vline(xintercept = 0) +
+        ggtitle("MCA plot - clusters of correlated diet covariate tertiles") + myTheme 
+
+```
+
+## BMI predictors
+
+```{r, eval = TRUE, echo = FALSE}
+
+vars <- as.vector(diet.names$labelsshort)
+
+diet.dummies <- data.frame(ID = diet$ID)
+
+for(var in vars){
+  tmp <- fastDummies::dummy_cols(.data = diet[, var])[,-1]
+  colnames(tmp) <- stringr::str_replace_all(string = colnames(tmp), 
+                                            pattern =".data", 
+                                            replacement = var)
+  diet.dummies <- cbind.data.frame(diet.dummies, tmp)
+}
+
+```
+
+```{r, eval = TRUE, echo = FALSE}
+
+#cat("BMI category prediction using Ordinal random forests \n")
+
+M <- merge(diet.dummies, phenotype, by = "ID")
+M <- merge(M, lifeStyle[,c("ID", as.vector(other.names$labelsshort))], by = "ID")
+M <- merge(M,  covariates, by = "ID")
+M <- M[,-1]
+
+var.names <- c(colnames(diet.dummies)[-1], as.vector(other.names$labelsshort))
+```
+
+### Ordinal Random forests
+
+```{r, eval = TRUE, echo = FALSE}
+#cat("BMI category prediction using Ordinal random forests \n")
+#If we prioritize overweight and obesity
+
+res.ordRF <- Lu_ordRF.perform(data = M, 
+                               outcome.name = "chBMI.cat", 
+                               perffunction = "custom", 
+                               classweights = 1/prop.bmi)
+
+
+Lu_ordRF.plot(res.ordRF = res.ordRF, selectedVar.names = var.names)
+```
+
+```{r, eval = TRUE, echo = FALSE}
+
+cutOff <- 0.0007
+cat("Selected lifestyle covariates with cutoff set at", cutOff, ":\n")
+
+selectedVars.rf <- res.ordRF %>% dplyr::filter(variable_name %in% var.names &
+                                                 var_importance>cutOff)
+selectedVars.rf <- as.vector(selectedVars.rf$variable_name)
+
+Lu_ordRF.plot(res.ordRF = res.ordRF, selectedVar.names = selectedVars.rf)
+  
+```
+
+### Diet profiles using BOS clustering
+
+```{r, eval = FALSE, echo = FALSE}
+
+x <- tapply(selectedVars.rf, 1:length(selectedVars.rf), 
+            function(x) stringr::str_split(x, pattern = "_")[[1]][1])
+M <- diet[,intersect(colnames(diet),x)]
+
+bosclusters <- Lu_bosclust(M = M, kr = 3, m = 3)
+bosclusters <- cbind.data.frame(ID = diet$ID, boscluster = bosclusters)
+
+save(bosclusters, file = "Results/bosclusters.RData")
+
+```
+
+```{r, eval = TRUE, echo = FALSE}
+
+load(file = "Results/bosclusters.RData")
+
+```
+
+```{r, eval = TRUE, echo = FALSE, out.height='50%'}
+
+merge(bosclusters, phenotype[, c("ID", "chBMI.cat")], by = "ID") %>% 
+              ggplot(aes(x = chBMI.cat, fill = factor(boscluster))) + 
+              geom_bar(position = "fill") + 
+              scale_fill_discrete("Cluster") +
+              xlab("BMI") +
+              ggtitle("BOS clusters and BMI classes") +
+              myTheme
+
+```
+
+
+### Ordinal logistic regression
+
+```{r, eval = TRUE, echo = FALSE}
+
+#cat("BMI category prediction using Ordinal random forests \n")
+
+M <- merge(diet.dummies, phenotype, by = "ID")
+M <- merge(M, lifeStyle[,c("ID", as.vector(other.names$labelsshort))], by = "ID")
+M <- merge(M, bosclusters, by = "ID")
+M <- merge(M,  covariates, by = "ID")
+M <- M[,-1]
+M$boscluster <- factor(M$boscluster)
+
+var.names <- c(colnames(diet.dummies)[-1], as.vector(other.names$labelsshort), "boscluster")
+```
+
+```{r, eval = TRUE, echo = FALSE}
+
+#cat("BMI category risk estimation using Ordinal logistic regression \n")
+
+outcome <- "chBMI.cat"
+
+testResults <- tapply(var.names, 
+                      1:length(var.names),
+                      function(mainEffect)
+                          Lu_ordinalLogistic(
+                              data = M, 
+                              mainEffect = mainEffect,
+                              isOrdered = F,
+                              confounders = as.vector(confounders.names$labelsshort), 
+                              outcome = outcome,
+                              level = 0.95,
+                              verbose = F)
+                      )
+
+testResults <- do.call(rbind.data.frame, testResults)
+
+```
+
+```{r, eval = TRUE, echo = FALSE}
+#------------------------------#
+# Results of all univariate analyses
+#------------------------------#
+
+cat("Significant effects \n")
+testResults %>% dplyr::filter(conf_inf*conf_sup>0) 
+
+```
+
+```{r, eval = TRUE, echo = FALSE}
+
+testResults %>% dplyr::filter(variable_name %in% c(selectedVars.rf, "boscluster")) %>%
+                ggplot(aes(x = levels, y = 0.5*(conf_inf+conf_sup))) + 
+                geom_line() + geom_point() +
+                geom_errorbar(aes(ymin = conf_inf, ymax = conf_sup), width=.2,
+                position=position_dodge(0.05)) +
+                geom_hline(yintercept = 0) +
+                ggtitle("Univariate ordinal logistic regression") +
+                ylab("Effect on the risk of overweight") + 
+                xlab("Lifestyle exposure") +
+                myTheme + coord_flip()
+
+```
+
+```{r, eval = TRUE, echo = FALSE}
+
+selectedLs <- c("Vegetables_3", "Sleep", "ReadyFood_3")
+
+```
+
+# Chemicals
+
+```{r, eval = TRUE, echo = FALSE}
+
+#cat("BMI category prediction using Ordinal random forests \n")
+
+M <- merge(chemicals, phenotype, by = "ID")
+M <- merge(M,  covariates, by = "ID")
+M <- M[,-1]
+
+```
+
+```{r, eval = TRUE, echo = FALSE}
+#cat("BMI category prediction using Ordinal random forests \n")
+#If we prioritize overweight and obesity
+
+res.ordRF <- Lu_ordRF.perform(data = M, 
+                               outcome.name = "chBMI.cat", 
+                               perffunction = "custom", 
+                               classweights = 1/prop.bmi)
+
+
+Lu_ordRF.plot(res.ordRF = res.ordRF, selectedVar.names = colnames(chemicals)[-1])
+
+```
+
+```{r, eval = TRUE, echo = FALSE}
+
+cutOff <- 0.0025
+cat("Selected chemical compounds with cutoff set at", cutOff, ":\n")
+
+selectedChem.rf <- res.ordRF %>% dplyr::filter(variable_name %in% colnames(chemicals)[-1] &
+                                                 var_importance>=cutOff)
+
+selectedChem.rf <- as.vector(selectedChem.rf$variable_name)
+selectedChem.rf
+
+Lu_ordRF.plot(res.ordRF = res.ordRF, selectedVar.names = selectedChem.rf)
+
+```
+
+```{r, eval = TRUE, echo = FALSE}
+
+#cat("BMI category risk estimation using Ordinal logistic regression \n")
+
+outcome <- "chBMI.cat"
+chemvar.names <- selectedChem.rf
+
+testResults <- tapply(chemvar.names, 
+                      1:length(chemvar.names),
+                      function(mainEffect)
+                          Lu_ordinalLogistic(
+                              data = M, 
+                              mainEffect = mainEffect,
+                              isOrdered = F,
+                              confounders = as.vector(confounders.names$labelsshort), 
+                              outcome = outcome,
+                              level = 0.95,
+                              verbose = F)
+                      )
+
+testResults <- do.call(rbind.data.frame, testResults)
+
+```
+
+```{r, eval = TRUE, echo = FALSE}
+
+testResults %>% dplyr::filter(variable_name %in% selectedChem.rf) %>%
+                ggplot(aes(x = variable_name, y = 0.5*(conf_inf+conf_sup))) + 
+                geom_line() + geom_point() +
+                geom_errorbar(aes(ymin = conf_inf, ymax = conf_sup), width=.2,
+                position=position_dodge(0.05)) +
+                geom_hline(yintercept = 0) +
+                ggtitle("Univariate ordinal logistic regression") +
+                ylab("Effect on the risk of overweight") + 
+                xlab("Chemical exposure") +
+                myTheme + coord_flip()
+
+```
+
+# Combining and comparing lifestyle and chemical exposures
+
+## Ordinal random forests
+
+```{r, eval = TRUE, echo = FALSE}
+
+#cat("BMI category prediction using Ordinal random forests \n")
+
+M <- merge(chemicals[, c("ID",selectedChem.rf)], phenotype, by = "ID")
+M <- merge(M, diet.dummies[, c("ID", intersect(colnames(diet.dummies),selectedLs))],  by = "ID")
+M <- merge(M, lifeStyle[, c("ID", intersect(colnames(lifeStyle),selectedVars.rf))],  by = "ID")
+M <- merge(M, covariates, by = "ID")
+M <- M[,-1]
+
+```
+
+```{r, eval = TRUE, echo = FALSE}
+#cat("BMI category prediction using Ordinal random forests \n")
+#If we prioritize overweight and obesity
+
+res.ordRF <- Lu_ordRF.perform(data = M, 
+                               outcome.name = "chBMI.cat", 
+                               perffunction = "custom", 
+                               classweights = 1/prop.bmi)
+
+
+Lu_ordRF.plot(res.ordRF = res.ordRF, selectedVar.names = c(selectedLs,selectedChem.rf))
+
+```
+
+## Ordinal logistic regression
+
+```{r, eval = TRUE, echo = FALSE, message = FALSE}
+#------------------------------#
+# Ordinal logistic with all lifestyle cov
+#------------------------------#
+
+outcome <- "chBMI.cat"
+confounders <- as.vector(confounders.names$label)
+vars <- c(selectedLs, selectedChem.rf)
+
+M[, outcome] <- factor(M[, outcome])
+
+formula <- stats::as.formula(paste(outcome, "~",
+                                     paste(vars, collapse = "+"), "+",
+                                     paste(confounders, collapse = "+")))
+  
+res <- MASS::polr(formula = formula, data = M, Hess=TRUE)
+    
+res <- confint(res) 
+
+res <- cbind.data.frame(variable_name = rownames((res)), res)
+colnames(res) <- c("variable_name", "conf_inf", "conf_sup")
+
+write.csv(res, file = "Results/logisticReg_lifestyle+chemicals.csv")
+  
+```
+
+```{r, eval = TRUE, echo = FALSE}
+
+res %>% dplyr::filter(variable_name %in% c(selectedChem.rf,selectedVars.rf)) %>%
+                ggplot(aes(x = variable_name, y = 0.5*(conf_inf+conf_sup))) + 
+                geom_line() + geom_point() +
+                geom_errorbar(aes(ymin = conf_inf, ymax = conf_sup), width=.2,
+                position=position_dodge(0.05)) +
+                geom_hline(yintercept = 0) +
+                ggtitle("Univariate ordinal logistic regression") +
+                ylab("Effect on the risk of overweight") + 
+                xlab("Chemical exposure") +
+                myTheme + coord_flip()
+
+```
+
