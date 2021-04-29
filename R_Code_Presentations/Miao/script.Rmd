@@ -1,0 +1,252 @@
+---
+title: "Gatekeeper"
+author: "Miao Yu and Lauren Petrick"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Import the data and transfer data format
+
+```{r}
+# data could be downloaded here: https://github.com/isglobal-brge/brgedata
+load("data/exposome.RData")
+load("data/metabol_serum.Rdata")
+
+library(Biobase)
+pds <- pData(metabol_serum)
+fds <- fData(metabol_serum)
+eds <- exprs(metabol_serum)
+exposome <- exposome[match(pds$ID,exposome$ID),]
+# only use numeric vairable
+row <- sapply(exposome, is.numeric)
+exp <- t(exposome[,row])
+phenotype <- phenotype[match(pds$ID,phenotype$ID),]
+```
+
+# Gatekeeper Discovery
+
+```{r}
+# remotes::install_github('yufree/enet')
+library(enet)
+library(ggnetwork)
+# check correlation among exposure
+enet <- geteenet(exp[-1,])
+
+# check correlation among metabolites
+mnets <- getmmnet(eds)
+net <- igraph::graph_from_data_frame(mnets$net,directed = F)
+igraph::V(net)$membership <- igraph::components(net)$membership
+n <- ggnetwork(net)
+pm1 <- ggplot(n, aes(x = x, y = y, xend = xend, yend = yend)) +
+  geom_edges(color = "grey50",size=0.7) +
+  geom_nodes(aes(color = as.factor(membership))) +
+  guides(color=F,size=F) +
+  ggtitle('Serum Metabolites network') +
+  theme_blank()
+# +ggsave('mnec.png')
+pm1
+
+# check correlation between metabolites and exposures
+re <- getemnet(exp(eds),exp[-1,])
+# screen gatekeeper
+gkidx <- sapply(re$data, function(x) dim(x)[2]==4)
+edsgk <- eds[gkidx,]
+
+tb <- as.data.frame.matrix(re$me) 
+na <- rownames(tb)
+
+library(network)
+library(ggnetwork)
+library(igraph)
+allme <- re$data[sapply(re$data, dim)[2,]==4]
+allmedf <- do.call(rbind,allme)
+allmedfm <- allmedf[allmedf$to%in%na,]
+sum(apply(table(allmedfm$from,allmedfm$to),1,sum)>1)
+# 12
+mname <- names(apply(table(allmedfm$from,allmedfm$to),1,sum)[apply(table(allmedfm$from,allmedfm$to),1,sum)>1])
+allmedf2 <- allmedf[allmedf$from %in% mname|allmedf$to %in% mname,]
+
+idxx <- paste(allmedf$from,allmedf$to,allmedf$direction)
+df <- allmedf[!duplicated(idxx),]
+df2 <- df[!df$from%in%df$from[df$from==df$to],]
+df3 <- df2[df2$to%in%na,]
+df4 <- df2[!df2$to%in%na,]
+df5 <- df4[df4$to %in% unique(df3$from)|df4$from %in% unique(df3$from),]
+df6 <- rbind.data.frame(df3,df5)
+gknamez <- df3$from
+
+net <- as.network(df6,loops = F,directed = F,matrix.type = 'edgelist')
+net %e% 'direction' <- df6$direction
+n <- ggnetwork(net)
+n$direction <- factor(n$direction,levels = c('positive','negative'))
+library(ggnetwork)
+p1 <- ggplot(n, aes(x = x, y = y, xend = xend, yend = yend)) +
+  geom_edges(color = "grey50",size=1,aes(linetype = direction)) +
+  geom_nodes(aes(size=2,shape=ifelse(vertex.names %in% gknamez,'square','circle'),color= ifelse(vertex.names %in% na,'black','blue'))) +
+  geom_nodelabel_repel(aes(label = ifelse(vertex.names %in% gknamez,vertex.names,NA)),
+                       fontface = "bold", box.padding = unit(1, "lines"))+
+  guides(size = FALSE,shape=F,color=F) +
+  theme_blank() 
+# +ggsave('menec.png')
+p1
+
+# png('upset.png',width = 2000,height = 1200,res = 300)
+tb <- as.data.frame.matrix(re$me) 
+na <- rownames(tb)
+tb <- tb[na%in%gknamez,]
+tb <- as.data.frame(t(tb))
+na <- rownames(tb)
+library(UpSetR)
+listinput <- list(`C16.1`=na[tb$log.C16.1==1],`C8`=na[tb$log.C8==1],`leu`=na[tb$log.Leu==1],`lysoPC.a.C26.1`=na[tb$log.lysoPC.a.C26.1==1],`lysoPC.a.C28.0`=na[tb$log.lysoPC.a.C28.0==1],`lysoPC.a.C28.1`=na[tb$log.lysoPC.a.C28.1==1],`PC.aa.C40.6`=na[tb$log.PC.aa.C40.6==1],`PC.ae.C36.3`=na[tb$log.PC.ae.C36.3==1],`PC.ae.C38.5`=na[tb$log.PC.ae.C38.5==1],`SM.C18.1`=na[tb$log.SM.C18.1], `Spermine`=na[tb$log.Spermine],`Val`=na[tb$log.Val])
+upset(fromList(listinput), order.by = "freq", nsets=10,mainbar.y.label = "Associated exposures(s)")
+# dev.off()
+```
+
+# Gatekeeper association with asthma
+
+```{r}
+x <- genefilter::rowttests(edsgk,factor(phenotype$hs_asthma))
+xx <- genefilter::rowttests(eds,factor(phenotype$hs_asthma))
+xxx <- genefilter::rowttests(exp[-1,],factor(phenotype$hs_asthma))
+sum(x$p.value<0.05)
+sum(xx$p.value<0.05)
+sum(xxx$p.value<0.05)
+
+df <- edsgk[rownames(edsgk) %in% rownames(x)[x$p.value<0.05],]
+
+# png('gka.png',width = 2000,height = 1000,res = 300)
+par(mar=c(4,2,4,0)+0.1,mfrow=c(1,3))
+boxplot(df[1,]~phenotype$hs_asthma,xlab='',ylab='',main='C14.1',xaxt='n')
+axis(1,at=c(1,2),labels = c('non-asthma','asthma'))
+boxplot(df[2,]~phenotype$hs_asthma,xlab='',ylab='',main='PC.ae.C38.5',xaxt='n')
+axis(1,at=c(1,2),labels = c('non-asthma','asthma'))
+boxplot(df[3,]~phenotype$hs_asthma,xlab='',ylab='',main='Val',xaxt='n')
+axis(1,at=c(1,2),labels = c('non-asthma','asthma'))
+# dev.off()
+```
+
+# Gene
+
+```{r eval=FALSE}
+load("data/exposome.RData")
+load("data/genexpr.Rdata")
+
+library(Biobase)
+pds <- pData(genexpr)
+fds <- fData(genexpr)
+eds <- exprs(genexpr)
+exposome <- exposome[match(pds$ID,exposome$ID),]
+# only use numeric vairable
+row <- sapply(exposome, is.numeric)
+exp <- t(exposome[,row])
+phenotype <- phenotype[match(pds$ID,phenotype$ID),]
+```
+
+# Gatekeeper Discovery
+
+```{r eval=FALSE}
+# remotes::install_github('yufree/enet')
+library(enet)
+# check correlation among exposure
+enet <- geteenet(exp[-1,])
+n <- igraph::graph_from_edgelist(as.matrix(enet$net[,c(1,2)]),directed = FALSE)
+plot(n,vertex.size=0.5,vertex.label=NA)
+
+# check correlation among metabolites
+mnets <- getmmnet(eds)
+n <- igraph::graph_from_edgelist(as.matrix(mnets$net[,c(1,2)]),directed = FALSE)
+plot(n,vertex.size=0.5,vertex.label=NA)
+
+# check correlation between metabolites and exposures
+re <- getemnet(exp(eds),exp[-1,])
+# screen gatekeeper
+gkidx <- sapply(re$data, function(x) dim(x)[2]==4)
+edsgk <- eds[gkidx,]
+```
+
+```{r eval=FALSE}
+exposome <- exposome[match(pdu$ID,exposome$ID),]
+# only use numeric vairable
+row <- sapply(exposome, is.numeric)
+exp <- t(exposome[,row])
+phenotype <- phenotype[match(pdu$ID,phenotype$ID),]
+# check correlation among metabolites
+mnets <- getmmnet(edu)
+n <- igraph::graph_from_edgelist(as.matrix(mnets$net[,c(1,2)]),directed = FALSE)
+plot(n,vertex.size=0.5,vertex.label=NA)
+
+# check correlation between metabolites and exposures
+re <- getemnet(exp(edu),exp[-1,])
+# screen gatekeeper
+gkidx <- sapply(re$data, function(x) dim(x)[2]==4)
+edsgk <- eds[gkidx,]
+write.csv(edsgk,file = 'genegk.csv')
+```
+
+278 metabolites correlation network clusters found
+28026 out of 28738 metabolites have no correlation with other metabolites
+169 exposures could be used for network analysis
+15 exposures correlation network clusters found
+91 out of 169 exposures have no correlation with other exposures
+2680 peaks with multiple exposures associated
+171 peaks with 6 exposures associated
+1610 peaks with 1 exposures associated
+700 peaks with 2 exposures associated
+203 peaks with 5 exposures associated
+43 peaks with 13 exposures associated
+292 peaks with 4 exposures associated
+65 peaks with 10 exposures associated
+101 peaks with 8 exposures associated
+30 peaks with 17 exposures associated
+122 peaks with 7 exposures associated
+481 peaks with 3 exposures associated
+7 peaks with 24 exposures associated
+84 peaks with 9 exposures associated
+53 peaks with 12 exposures associated
+52 peaks with 14 exposures associated
+33 peaks with 16 exposures associated
+59 peaks with 11 exposures associated
+34 peaks with 15 exposures associated
+4 peaks with 27 exposures associated
+11 peaks with 21 exposures associated
+12 peaks with 20 exposures associated
+21 peaks with 18 exposures associated
+1 peaks with 39 exposures associated
+6 peaks with 26 exposures associated
+9 peaks with 22 exposures associated
+16 peaks with 44 exposures associated
+7 peaks with 30 exposures associated
+1 peaks with 35 exposures associated
+17 peaks with 19 exposures associated
+5 peaks with 28 exposures associated
+13 peaks with 23 exposures associated
+2 peaks with 41 exposures associated
+1 peaks with 42 exposures associated
+5 peaks with 34 exposures associated
+3 peaks with 29 exposures associated
+8 peaks with 31 exposures associated
+1 peaks with 33 exposures associated
+1 peaks with 36 exposures associated
+3 peaks with 25 exposures associated
+1 peaks with 37 exposures associated
+1 peaks with 38 exposures associated
+1 peaks with 46 exposures associated
+257 peaks connected with other peaks and exposures
+4033 peaks connected with exposures only
+
+```{r eval=FALSE}
+x <- genefilter::rowttests(edsgk,factor(phenotype$hs_asthma))
+xx <- genefilter::rowttests(eds,factor(phenotype$hs_asthma))
+xxx <- genefilter::rowttests(exp[-1,],factor(phenotype$hs_asthma))
+sum(p.adjust(x$p.value<0.05,'BH'))
+# 89
+sum(p.adjust(xx$p.value<0.05,'BH'))
+# 1481
+sum(p.adjust(xxx$p.value<0.05,'BH'))
+# 36
+```
+
