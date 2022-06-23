@@ -8,7 +8,7 @@ csl: apa.csl
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo = TRUE, dev = "png")
 ```
 
 
@@ -121,7 +121,7 @@ image(t(image_example$img), col=grey(0:64/64), axes=FALSE, xlab="", ylab="")
 To obtain these images, we emit x-rays through an x-ray tube. The rays pass through the lungs and reach a detector. Depending on the tissue it passes through, it absorbs more or less x-rays. The scanner uses the different levels of absorption to create the image.
 To make the images, several slices of the lung are made (horizontal slices), if we combine these slices, we can obtain the image of the lung in 3 dimensions.
 
-```{r , echo=FALSE, out.width="55%", out.height=="55%", fig.align="center"}
+```{r , echo=FALSE, out.width="35%", out.height="40%", fig.align="center"}
 knitr::include_graphics("./img/ct_scan.png")
 ```
 
@@ -130,13 +130,8 @@ knitr::include_graphics("./img/ct_scan.png")
 ##### **DICOM (.dcm) images**
 The R package *oro.dicom* is a collection of input/output functions for medical imaging data that conform to the Digital Imaging and Communications in Medicine (DICOM) standard. The R package *RIA* is another package that was developed to facilitate radiomic analysis of medical images. 
 
-First we load the libraries oro.dicom and RIA.
-```{r, message=FALSE}
-library(oro.dicom)
-library(RIA)
-```
 
-Now we will display 3 images from the same patient (that is three slices of a person's lung). To read the images we use the function: *readDICOMFile(path_to_the_image)*.
+Now we will display 2 images from the same patient (that is three slices of a person's lung). To read the images we use the function: *readDICOMFile(path_to_the_image)*.
 
 ```{r, out.width = "250px", out.height = "350px"}
 image1 <- readDICOMFile("/Users/andrealetaalfonso/Desktop/TFG/images/Kaggle/ID00007637202177411956430/11.dcm")
@@ -144,9 +139,6 @@ image(t(image1$img), col=grey(0:64/64), axes=FALSE, xlab="", ylab="")
 
 image2 <- readDICOMFile("/Users/andrealetaalfonso/Desktop/TFG/images/Kaggle/ID00007637202177411956430/12.dcm")
 image(t(image2$img), col=grey(0:64/64), axes=FALSE, xlab="", ylab="")
-
-image3 <- readDICOMFile("/Users/andrealetaalfonso/Desktop/TFG/images/Kaggle/ID00007637202177411956430/13.dcm")
-image(t(image3$img), col=grey(0:64/64), axes=FALSE, xlab="", ylab="")
 ```
 
 
@@ -158,7 +150,7 @@ image(t(image3$img), col=grey(0:64/64), axes=FALSE, xlab="", ylab="")
 
 If we have nifit images, we can view them with thw library *RNifti*. And the function to view the image is: *readNifti(path_to_image)*.
 
-```{r, message=FALSE}
+```{r, message=FALSE, out.width="40%"}
 library(RNifti)
 image <- readNifti("/Users/andrealetaalfonso/Desktop/TFG/DICOMS/rstudio-export/023140000001/023140000001_INSP_STD_L1_ECLIPSE.nii.gz")
 view(image, point = c(239, 239, 131))
@@ -166,7 +158,7 @@ view(image, point = c(239, 239, 131))
 
 We can also use the library *oro.nifti* and *neurobase*. To view the images use: *neurobase::readnii(path_to_image)*. For example, an image and a mask:
 
-```{r, message=FALSE, out.width="30%"}
+```{r, message=FALSE, out.width="20%"}
 library(oro.nifti)
 # Image
 image2 <- neurobase::readnii("/Users/andrealetaalfonso/Desktop/TFG/DICOMS/rstudio-export/023140000001/023140000001_INSP_STD_L1_ECLIPSE.nii.gz")
@@ -178,7 +170,7 @@ image(mask,z=100,plot.type="single")
 
 And to overlay the image and the mask use the function: *oro.nifti::slice_overlay(the_image, the_mask, z)*:
 
-```{r, message=FALSE, out.width="30%"}
+```{r, message=FALSE, out.width="20%"}
 oro.nifti::slice_overlay(image2, mask, z=100)
 ```
 
@@ -215,7 +207,7 @@ first_order <- RIA:::list_to_df(data$stat_fo$orig) # list of first order statist
 name_characteristics <- rownames(first_order) # names of the first order statistics
 ```
 ```{r, message=FALSE}
-print(as_tibble(first_order))
+library(tidyverse)
 ```
 
 With RIA we can also compute the <u>Gray level co-occurrence matrix (GLCM)</u> calculations and statistics. GLCMs are second-order statistics.
@@ -276,8 +268,6 @@ print(as_tibble(results))
  
 ## 4. Segmentation
 
-<span style="color:red">TO DO: Explain better segmentation process</span>
-
 As we explained in the introduction, segmentation refers to delineating the areas of interest in the image in terms of pixels or voxels, in our case, the lung. Lung segmentation refers to the computer-based process of identifying the boundaries of lungs from surrounding thoracic tissue on the scan images. Once we have the segmented images, we can start our analysis.
 
 Now we will discuss different software to do lung segmentation.
@@ -319,25 +309,10 @@ mask2 <- segment_lung(image2)
 
 And finally, we plot some of the masks.
 
-```{r, message=FALSE, out.width = "700px", out.height = "400px"}
+```{r, message=FALSE,  out.width = "700px", out.height = "400px"}
 plot(mask2$lung_mask)
 ```
 
-
-
-#### **Radiomic features with masks (lungct)**
-In this section we will compute the radiomic features of the images with masks, obtained with lungct.
-
-```{r eval = FALSE, results = FALSE, message=FALSE}
-RIA_lung(
-  image, mask$lung_mask, 
-  sides = c("right", "left"), 
-  features = c("fo"), 
-  bins_in = 16, equal_prob = FALSE, distance = 1, 
-  statistic = "mean(X, na.rm = TRUE)")
-```
-
-<span style="color:red">ERROR, IT DOES NOT WORK</span>
 
 ##### **Radiomic features with masks with multiple patients (RIA, lungct)**
 Now we will create multiple .txt files with the results of the radiomic features of different patients, using a mask.
@@ -432,8 +407,6 @@ lung = pydicom.read_file("/Users/andrealetaalfonso/Desktop/TFG/images/Kaggle/ID0
 slice = lung.pixel_array
 plt.axis('off')
 slice[slice == -2000] = 0
-plt.imshow(slice, cmap=plt.cm.gray)
-plt.show()
 ```
 
 We create a function *file_is_hidden()* to read only .dcm files and not hidden files in the folder that we cannot see in our computers.
@@ -465,7 +438,7 @@ ct_scan = read_ct_scan(path_images)
 ```
 
 Plot some of the images from a folder.
-```{python, out.width = "650px"}
+```{python, out.width = "450px"}
 def plot_ct_scan(scan):
     f, plots = plt.subplots(int(scan.shape[0] / 20) + 1, 4, figsize=(25, 25))
     for i in range(0, scan.shape[0], 5):
@@ -516,7 +489,7 @@ def get_segmented_lungs2(im, plot=False):
 ```
 
 Image
-```{python,  echo=FALSE, out.width = "350px"}
+```{python,  echo=FALSE, out.width = "150px"}
 # pip3 install nltk==3.6.2
 lung = pydicom.read_file("/Users/andrealetaalfonso/Desktop/TFG/images/Kaggle/ID00184637202242062969203/20.dcm")
 slice = lung.pixel_array
@@ -529,7 +502,7 @@ Mask of the image
 ```{python, message=FALSE, results = FALSE}
 get_segmented_lungs2(ct_scan[20], True)
 ```
-```{python, out.width = "450px"}
+```{python, out.width = "200px"}
 plt.show()
 ```
 
@@ -547,7 +520,7 @@ Now we will briefly explain the process of radiomics.
 8. Superimpose the binary mask on the input image.
 
 
-```{r, echo=FALSE, out.width="50%", out.height=="50%", fig.align="center"}
+```{r, echo=FALSE, out.width="40%", out.height=="40%", fig.align="center"}
 knitr::include_graphics("./img/steps_segmentation.png")
 ```
 
@@ -557,8 +530,6 @@ We can do the segmentation of all the slices of the scan.
 def segment_lung_from_ct_scan(ct_scan):
     return np.asarray([get_segmented_lungs2(slice) for slice in ct_scan])
 segmented_ct_scan2 = segment_lung_from_ct_scan(ct_scan)
-plot_ct_scan(segmented_ct_scan2)
-plt.show()
 ```
 
 
@@ -608,8 +579,8 @@ g = glob(data_path + '/*.dcm')
 
 Print out the first 5 file names to verify we are in the right folder.
 ```{python}
-print("Total of %d DICOM images.\nFirst 5 filenames:" % len(g))
-print('\n'.join(g[:5]))
+# print("Total of %d DICOM images.\nFirst 5 filenames:" % len(g))
+# print('\n'.join(g[:5]))
 ```
 
 Now we loop over the image files and store everything into a list.
@@ -662,7 +633,7 @@ Now we will check if the Houndsfeld Units (HU) are properly scaled and represent
 
 Let's display an histogram to check HU.
 
-```{python, results = FALSE,  out.width = "500"}
+```{python, results = FALSE,  out.width = "300"}
 file_used=output_path+"fullimages_%d.npy" % id
 imgs_to_process = np.load(file_used).astype(np.float64) 
 plt.hist(imgs_to_process.flatten(), bins=50, color='c')
@@ -677,7 +648,7 @@ We obtain the conclusions that we will need to do preprocessing to study well th
 
 Now we display some of the images, we will be skipping every two slices.
 
-```{python, out.width = "500"}
+```{python, out.width = "400"}
 id = 0
 imgs_to_process = np.load(output_path+'fullimages_{}.npy'.format(id))
 
@@ -826,14 +797,14 @@ def make_lungmask(img, display=False):
 ```
 
 We know obtain the segmentation to only one image.
-```{python, out.width = "450", results = FALSE}
+```{python, out.width = "350", results = FALSE}
 img = imgs_after_resamp[63]
 make_lungmask(img, display=True)
 ```
 
 Anf finally we apply it to all the slices.
 
-```{python, out.width = "500"}
+```{python, out.width = "400"}
 masked_lung = []
 for img in imgs_after_resamp:
     masked_lung.append(make_lungmask(img))
@@ -965,7 +936,7 @@ def get_and_save_masks(series_path):
 ```
 
 Plot one image.
-```{python, out.width = "400"}
+```{python, out.width = "200"}
 ds = pydicom.dcmread("/Users/andrealetaalfonso/Desktop/TFG/DICOMS/id_1/std_38.dcm")
 plt.imshow(ds.pixel_array, cmap='gray')
 plt.show()
@@ -977,18 +948,18 @@ image1 = get_img_sitk("/Users/andrealetaalfonso/Desktop/TFG/DICOMS/id_1/std_38.d
 mask_filter_single, masked_lung_single = generate_mask(image1)
 ```
 
-```{python, out.width = "400"}
+```{python, out.width = "200"}
 plt.imshow(mask_filter_single, cmap='gray')
 plt.show()
 ```
 
-```{python, out.width = "400"}
+```{python, out.width = "200"}
 plt.imshow(masked_lung_single, cmap='gray')
 plt.show()
 ```
 
 We can visualize it all in one panel.
-```{python, results = FALSE, out.width = "600"}
+```{python, results = FALSE, out.width = "400"}
 fig, ax = plt.subplots(1,3)
 ax[0].set_title("Original", fontsize='small')
 ax[0].imshow(ds.pixel_array, cmap='gray')
@@ -1014,12 +985,6 @@ get_and_save_masks("/Users/andrealetaalfonso/Desktop/TFG/DICOMS/id_1")
 ```
 
 
-
-<span style="color:red">TO DO: explain final segmenation used</span>
-
-
-
-
 <br>
 
 
@@ -1033,7 +998,6 @@ Load the images and the masks with the funcion *load_dicom()*.
 
 
 ```{r, message=FALSE, results = FALSE, warnings = FALSE,  echo = T, results = 'hide'}
-library(RIA)
 images = load_dicom(filename = "/Users/andrealetaalfonso/Desktop/TFG/DICOMS/id_1", 
                     mask_filename = "/Users/andrealetaalfonso/Desktop/TFG/DICOMS/id_1_mask")
  
@@ -1045,10 +1009,6 @@ images = first_order(RIA_data_in = images)
 results <- RIA:::list_to_df(images$stat_fo$orig)
 name_characteristics <- rownames(results)
 ```
-```{r, message=FALSE}
-print(as_tibble(results))
-```
-
 
 
 **Multiple patients at the same time**
@@ -1070,8 +1030,6 @@ for i in patients: # for loop through all the patients
 Now we compute the radiomic features.
 
 ```{r, message=FALSE, warnings = FALSE, results = FALSE, eval = FALSE}
-library(RIA)
-
 res <- c()
 
 images_folder_names <- grep(list.files(path="/Users/andrealetaalfonso/Desktop/TFG/images/Kaggle"), pattern='mask', invert=TRUE, value=TRUE)
@@ -1157,7 +1115,7 @@ We computed all these metrics with the images. Let's load the radiomic features 
 ```{r}
 example <- read.table("/Users/andrealetaalfonso/Desktop/TFG/A_Project/results/ECLIPSE_results_ParamsNorm/023140000001_INSP_STD_L1_ECLIPSE.nii.gz.tsv", sep="\t")
 colnames(example) <- c("Features", "Values")
-example[20:30,]
+example[5:10,]
 ```
 
 To perform data analysis, we will use *RaDAr* objects, we will explain it in the next section.
@@ -1174,9 +1132,7 @@ To perform data analysis, we will use *RaDAr* objects, we will explain it in the
 Now we will study multiple radiomic features with multiple patients. We will use the *RaDAr* to manipulate the results.
 
 
-Load the libraries.
 ```{r, message=FALSE, results=FALSE}
-library(RIA)
 library(RNifti)
 ```
 
@@ -1321,8 +1277,6 @@ library(RadAR)
 
 With *RadAR* we can import the radiomic features that we extracted before using pyradiomics.
 
-<span style="color:red">TO DO: explain normalizacion y shift, y con normalizacion.</span>
-
 We will create the *rdr* object with normalization and shift, and another one with normalization only. We use the function *import_pyradiomics(path_to_folder)* to import the results we obtained using pyradiomics, where *path_to_folder* is the path to the folder containing the pyradiomics csv files. The function filters out duplicated feature names. 
 
 ```{r, eval = FALSE}
@@ -1352,7 +1306,6 @@ rdr
 
 The *rdr* object is a *SummarizedExperiment*.
 
-<span style="color:red">TO DO: explain more & add image SummarizedExperiment</span>
 
 The available clinical data can be also imported in the *rdr* object.
 
@@ -1452,7 +1405,6 @@ Open *rdr*:
 ```{r, warning=FALSE}
 a <- listRDA("rdr_Andrea_Norm.rda")
 rdr <- a$rdr_Norm
-rdr
 ```
 
 Change names: eliminate the extension of the name and keep the number and separate between different times (L1, L2, L3).
@@ -1497,14 +1449,13 @@ Open the radar:
 ```{r, warning=FALSE}
 file <- listRDA("rdr_L1_Andrea.rda")
 rdr_L1 <- file$rdr_L1
-rdr_L1
 ```
 
 Data frame for rdr:
 ```{r}
 data_rdr_L1 <- assay(rdr_L1)
 df_rdr <- as.data.frame(data_rdr_L1)
-df_rdr[1:10,1:2]
+df_rdr[1:5,1:2]
 ```
 
 
