@@ -1,0 +1,973 @@
+---
+title: "continue....."
+output:
+  html_document: default
+  pdf_document: default
+bibliography: Andrea.bib
+csl: apa.csl
+---
+
+```{r setup, results=FALSE}
+knitr::opts_chunk$set(echo = TRUE, dev = "png")
+```
+
+
+## 7. Data analysis 
+
+First we will load all the libraries that we will need to perform our data analysis:
+```{r, results='hide', warning=FALSE, error=FALSE, message=FALSE}
+library(tidyverse)
+library(caret)
+library(ade4) # PCA
+library(made4) # PCA
+library(scatterplot3d) # PCA
+library(admisc) # Read radar objects
+library(omicade4) # CCA
+library(gbm) # Boosting
+library(randomForest) # Random Forest
+library(xgboost) # XgBoost
+library(data.table) # for setnames (in random forest)
+library(DMwR) # SMOTE -> remotes::install_github("cran/DMwR")
+```
+
+
+<br>
+
+
+#### **Chronic obstructive pulmonary disease (COPD)**
+
+Chronic obstructive pulmonary disease (COPD) is a long-term lung illness in which the lungs' small airways are damaged, making it difficult for air to enter and exit.\
+
+COPD patients commonly experience one or more of the following symptoms:
+
+- having trouble breathing 
+
+- prolonged cough (more than 3 months) 
+
+- a cough with mucus most days
+
+- wheezing (a whistling sound when you breathe)
+
+- chest tightness
+
+
+Shortness of breath is the most common symptom of COPD. Simple daily tasks like walking short distances or walking a stairway might cause COPD sufferers to become out of breath. Even at rest, breathing might become difficult as the condition progresses.\
+
+Long-term cigarette smoking is the most common cause of COPD. The more cigarettes you smoke, the more likely you are to get COPD.\
+
+
+<br>
+
+
+### 7.1 Clinical data cleaning
+
+Before we begin with our analysis, we need to explore our clinical data and clean it.
+
+View data:
+```{r}
+clinic_data <- read.delim("eclipse_all.txt")
+print(as_tibble(clinic_data))
+```
+
+Delete irrelevant columns:
+```{r}
+clinic_data$id <- paste0("0", clinic_data$id) # Add 0 in front of index to match rdr names
+
+clinic_data <- clinic_data[-1] # delete first columns (index 0,1,2...)
+row.names(clinic_data) <- clinic_data$id # id as rownames
+clinic_data$id <- NULL # delete id colum
+
+clinic_data$SUBJID.t1 <- NULL # index
+clinic_data$SCRNDT <- NULL # dates
+clinic_data$SUBJID.t3 <- NULL # index
+```
+
+Select variables of t1 (data from time 1).
+```{r, warning=FALSE}
+clinical_data_T1 <- dplyr::select(clinic_data, !ends_with("t3"))
+```
+
+Check for missing data:
+```{r}
+sum(is.na(clinical_data_T1))
+```
+
+Delete variables that have more than a 30% of missing values:
+```{r}
+more_30_missing <- names(clinical_data_T1[ , colMeans(is.na(clinical_data_T1)) > 0.3])
+clinical_data_T1 <- clinical_data_T1[, !colnames(clinical_data_T1) %in% more_30_missing]
+```
+
+Impute missing values of double variables for the mean value:
+```{r}
+clinical_data_T1 <- clinical_data_T1 %>%  mutate_if(is.double,
+                                                    function(x) ifelse(is.na(x), mean(x, na.rm = T), x)) 
+```
+
+Impute missing values of integer variables for the most common value:
+```{r}
+clinical_data_T1 <- clinical_data_T1 %>%  mutate_if(is.integer,
+                                                    function(x) ifelse(is.na(x), which.max(x), x)) 
+```
+
+Impute missing values of categroical variables for the most common value:
+```{r}
+clinical_data_T1[, sapply(clinical_data_T1, function(x) !is.numeric(x))] <- apply(clinical_data_T1[, sapply(clinical_data_T1, function(x) !is.numeric(x))], 
+                                                      2, function(x) {x[is.na(x)] <- names(sort(table(x), decreasing = TRUE)[1]); x})
+```
+
+Check for missing data:
+```{r}
+sum(is.na(clinical_data_T1))
+```
+
+Characters to factors:
+```{r}
+ch <- sapply(clinical_data_T1, is.character)
+clinical_data_T1[ch] <- lapply(clinical_data_T1[ch], as.factor)
+```
+
+Now that we have a clean data set, we will export it:
+```{r, eval = FALSE}
+write.table(clinical_data_T1, file = "eclipse_all_CLEAN.txt", sep = "\t")
+```
+
+
+
+<br>
+
+
+
+### 7.2 Principal Component Analysis (PCA)
+
+We will first start doing principal component analysis with the radiomic features.\
+
+Recall that PCA is a statistical approach that allows you to summarize the content of big data tables using a smaller set of "summary indices" that are easier to display and study.\
+
+
+**All clinical variables**
+
+Load the clean clinic data set and convert all columns to be numeric (needed for PCA):
+```{r}
+clinic_data_clean <- read.delim("eclipse_all_CLEAN.txt")
+data <- mutate_all(clinic_data_clean, function(x) as.numeric(as.factor(x)))
+data[1:5, 1:8]
+```
+
+PCA:
+```{r}
+results_PCA <- ord(data, type="coa")
+plot(results_PCA, classvec = colnames(data), genecol="grey3")
+```
+
+
+<br>
+
+
+
+**Differenciate between control (smoker vs non-smoker) and cases (COPD)**
+
+Load data:
+```{r}
+clinic_data_clean <- read.delim("eclipse_all_CLEAN.txt")
+clinic_data_clean <- mutate_all(clinic_data_clean, function(x) as.numeric(as.factor(x)))
+data <- as.data.frame(t(clinic_data_clean))
+colnames(data) <- rownames(clinic_data_clean) # put id names
+
+## Label for "COPD" or "Non COPD"
+class_vector <- as.numeric(data["TRTGRP.t1",])
+for(i in 1:length(class_vector)){
+  if(class_vector[i] == 1) class_vector[i] <- "COPD"
+  else class_vector[i] <- "Non COPD"
+}
+
+## Delete TRTGRP.t1 from table
+data <- data[!(row.names(data) %in% "TRTGRP.t1"), ]
+data[1:5, 1:8]
+```
+
+PCA:
+```{r}
+results_PCA <- ord(data, type="coa")
+plot(results_PCA, classvec = class_vector, genecol="grey3")
+```
+
+<br>
+
+
+**Radiomic features: control (smoker vs non-smoker) and cases (COPD)**
+
+Load radiomic features and clinic data. Since they differ in the number of id, we will only keep common ids.
+```{r}
+## Radar object
+file <- listRDA("rdr_L1_Andrea.rda")
+rdr_L1 <- file$rdr_L1
+df_rdr <- as.data.frame(assay(rdr_L1))
+
+## Clinic data
+clean_data <- read.delim("eclipse_all_CLEAN.txt")
+clean_data <- mutate_all(clean_data, function(x) as.numeric(as.factor(x))) # convert to numeric
+df_clinical <- as.data.frame(t(clean_data)) # id as columns
+colnames(df_clinical) <- rownames(clean_data) 
+
+## Keep common ids
+id_in_rdr <- colnames(df_rdr) # id of rdr
+id_in_clinical <- colnames(df_clinical) # id of clinical
+common_id <- Reduce(intersect, list(id_in_rdr,id_in_clinical)) # common id
+
+df_clinical <- select(df_clinical, one_of(common_id))
+df_rdr <- select(df_rdr, one_of(common_id))
+
+## Label for "COPD" or "Non COPD"
+class_vector <- as.numeric(df_clinical["TRTGRP.t1",])
+for(i in 1:length(class_vector)){
+  if(class_vector[i] == 1) class_vector[i] <- "COPD"
+  else class_vector[i] <- "Non-COPD"
+}
+
+df_rdr[1:5, 1:8]
+```
+
+PCA:
+```{r}
+results_PCA <- ord(df_rdr, type="coa")
+plot(results_PCA, classvec = class_vector, genecol="grey3")
+```
+
+
+
+
+<br>
+
+
+
+### 7.2 Canonical correlation analysis (CCA)
+
+Now we will analyze the radiomic features against the variables at time T1 using **canonical correlation**.\
+
+Canonical correlation analysis (CCA) is a statistical technique for extracting information from cross-covariance matrices. If we have two vectors of random variables, X = (X1,..., Xn) and Y = (Y1,..., Ym), and the variables are correlated, canonical-correlation analysis will find linear combinations of X and Y that have the highest correlation. \
+
+Multiple correlation analysis predicts only one dependent variable from several independents, but canonical correlation predicts multiple dependent variables from multiple independents.\
+
+In our case, we will have 2 tables. One with the radiomics features, and another one with the clinical data. We want to have id -> columns and features -> rows.\
+
+
+Load radiomic features and clinic data. Since they differ in the number of id, we will only keep common ids.
+```{r}
+## Radar object
+file <- listRDA("rdr_L1_Andrea.rda")
+rdr_L1 <- file$rdr_L1
+df_rdr <- as.data.frame(assay(rdr_L1))
+
+## Clinic data
+clean_data <- read.delim("eclipse_all_CLEAN.txt")
+clean_data <- mutate_all(clean_data, function(x) as.numeric(as.factor(x))) # convert to numeric
+df_clinical <- as.data.frame(t(clean_data)) # id as columns
+colnames(df_clinical) <- rownames(clean_data) 
+
+## Keep common ids
+id_in_rdr <- colnames(df_rdr) # id of rdr
+id_in_clinical <- colnames(df_clinical) # id of clinical
+common_id <- Reduce(intersect, list(id_in_rdr,id_in_clinical)) # common id
+
+df_clinical <- select(df_clinical, one_of(common_id))
+df_rdr <- select(df_rdr, one_of(common_id))
+
+## Label for "COPD" or "Non COPD"
+class_vector <- as.numeric(df_clinical["TRTGRP.t1",])
+for(i in 1:length(class_vector)){
+  if(class_vector[i] == 1) class_vector[i] <- "COPD"
+  else class_vector[i] <- "Non-COPD"
+}
+
+df_clinical <- df_clinical[!(row.names(df_clinical) %in% "TRTGRP.t1"), ] # delete TRTGRP.t1 from table
+
+df_clinical[1:5, 1:8]
+df_rdr[1:5, 1:8]
+```
+
+Combine both data frames into a list.
+```{r}
+both_tables <- list("rdr" = df_rdr, "clinical" = df_clinical)
+sapply(both_tables, dim) # check the dimension are correct
+```
+
+Perform CCA:
+```{r}
+mcoin <- mcia(both_tables, cia.nf=10)
+plot(mcoin, axes=1:2, phenovec = class_vector, sample.lab=FALSE, df.color=1:2) # visualize the result
+```
+
+
+
+<br>
+
+
+
+### 7.4 TRTGRP prediction
+
+Now we will use different methods to predict *TRTGRP* with the radiomic features.\
+
+Load clinic data and radiomic features. Since they differ in the number of id, we will only keep common ids.
+```{r}
+## Radar object
+file <- listRDA("rdr_L1_Andrea.rda")
+rdr_L1 <- file$rdr_L1
+df_rdr <- as.data.frame(assay(rdr_L1))
+
+## Clinic data
+clean_data <- read.delim("eclipse_all_CLEAN.txt")
+ch <- sapply(clean_data, is.character) # characters to factors
+clean_data[ch] <- lapply(clean_data[ch], as.factor)
+
+## Keep common ids
+id_in_rdr <- colnames(df_rdr) # id of rdr
+id_in_clinical <- rownames(clean_data) # id of clinical
+common_id <- Reduce(intersect, list(id_in_rdr,id_in_clinical)) # common id
+df_clinical <- clean_data %>% filter(row.names(clean_data) %in% common_id)
+df_rdr <- select(df_rdr, one_of(common_id))
+```
+
+View a summary of our variable of interest *TRTGRP.t1*:
+```{r}
+table(clean_data$TRTGRP.t1)
+TRTGRP_values <- as.numeric(clean_data$TRTGRP.t1)
+table(TRTGRP_values)
+```
+
+We have three different levels: COPD Subjects Non-smoker, Controls and Smoker Controls. We will combine it into two levels: COPD (cases) and Non COPD (controls).
+```{r}
+for(i in 1:length(TRTGRP_values)){
+  if(TRTGRP_values[i] == 1) TRTGRP_values[i] <- "COPD"
+  else TRTGRP_values[i] <- "Non COPD"
+}
+table(TRTGRP_values)
+TRTGRP_values <- as.numeric(as.factor(TRTGRP_values))
+table(TRTGRP_values)
+```
+
+We are interested in predicting *TRTGRP.t1* given the radiomic features. So we will add this variable to the table of radiomic features.\
+
+
+Add the values to the data frame and put id as rows instead of columns:
+```{r}
+df_rdr2 <- rbind(df_rdr, "TRTGRP_values" = TRTGRP_values)
+df_rdr3 <- as.data.frame(t(df_rdr2))
+rownames(df_rdr3) <- colnames(df_rdr2) # put id names
+print(as_tibble(df_rdr3))
+```
+
+
+With the data we have, we need to balance the data.
+
+Check how much data we have of each type:
+```{r, out.width="50%"}
+barplot(prop.table(table(TRTGRP_values)), col = rainbow(2), ylim = c(0, 1), main = "TRTGRP_values Distribution")
+```
+
+We can clearly see that we don't have balanced data, this will produce not very accurate results in our models.
+```{r}
+table(TRTGRP_values)
+```
+
+**Balancing data**
+
+We will use different techniques for balancing data.
+
+- <u>Upsampling</u>: refers to the technique to create artificial or duplicate data points or of the minority class sample to balance the class label. 
+- <u>SMOTE method</u> (Synthetic Minority Oversampling TEchnique): which is an oversampling technique that aims to balance class distribution by randomly increasing minority class examples by replicating them, generates synthetic data points of minority samples
+- <u>Downsampling method</u>: removes or reduces the majority of class samples to balance the class label.
+
+
+
+<br>
+
+
+
+**Boosting**
+
+We create a function that takes as a parameter your entire dataset and returns the accuracy of a boosting model (GBM).\
+
+```{r}
+Boosting <- function(data){
+  
+  #### Select train 70% and test 30% randomly
+  rows <- sample(nrow(data), .7 * nrow(data))
+  train_data <- data[rows, ] # train data
+  test_data <- data[-rows, ] # test data
+  
+  #### Train a model using our training data
+  model_gbm <- gbm(TRTGRP_values ~.,
+                data = train_data,
+                distribution = "multinomial",
+                cv.folds = 10,
+                shrinkage = .01,
+                n.minobsinnode = 10,
+                n.trees = 500)       # 500 tress to be built
+  
+  #### Make predictions on the test data
+  pred_test <- predict.gbm(object = model_gbm,
+                   newdata = test_data,
+                   n.trees = 500,           # 500 tress to be built
+                   type = "response")
+  
+  #### Create a confusion matrix:
+  class_names <- colnames(pred_test)[apply(pred_test, 1, which.max)]
+  result <- data.frame(test_data$TRTGRP_values, class_names)
+  conf_mat <- confusionMatrix(as.factor(test_data$TRTGRP_values), as.factor(class_names))
+  
+  return(conf_mat$overall["Accuracy"]) # return Accuracy
+}
+```
+
+First we will do Boosting *without balancing* the data:
+```{r, warning=FALSE}
+(boosting_not_balanced <- Boosting(df_rdr3))
+```
+
+Balancing our data with *upsampling* method:
+```{r, warning=FALSE}
+up_data <- upSample(x = df_rdr3[, -ncol(df_rdr3)], y = df_rdr3$TRTGRP_values)
+up_data <- cbind(data.frame(up_data$x), data.frame(up_data$y))
+names(up_data)[names(up_data) == 'up_data.y'] <- 'TRTGRP_values'
+table(up_data$TRTGRP_values) 
+```
+```{r, warning=FALSE}
+(boosting_up <- Boosting(up_data))
+```
+
+Balancing our data with *SMOTE* method:
+```{r}
+df_rdr3$TRTGRP_values <- as.factor(df_rdr3$TRTGRP_values)
+smote_data <- SMOTE(TRTGRP_values ~ ., data  = df_rdr3)                         
+table(smote_data$TRTGRP_values) 
+```
+```{r, warning=FALSE}
+(boosting_smote <- Boosting(smote_data))
+```
+
+Balancing our data with *downsampling* method:
+```{r}
+down_data <- downSample(x = df_rdr3[, -ncol(df_rdr3)], y = df_rdr3$TRTGRP_values)
+names(down_data)[names(down_data) == 'Class'] <- 'TRTGRP_values'
+table(down_data$TRTGRP_values) 
+```
+```{r, warning=FALSE}
+(boosting_down <- Boosting(down_data))
+```
+
+
+
+<br>
+
+
+
+**Random Forest**
+
+With Random Forest we can't have columns starting with numbers, so we will change them and add an A before the number:
+
+```{r}
+df_rdr4 <- df_rdr3
+# Columns that start with numbers
+names_number <- colnames(df_rdr4 %>% dplyr:: select(starts_with(c("0","1","2","3","4","5","6","7","8","9"))))
+# Add and A before the number
+names_changed <- unlist(lapply(names_number, function(x) paste("A", x, sep="")))
+# Change the names
+setnames(df_rdr4, old=names_number, new = names_changed, skip_absent=TRUE)
+```
+
+
+We create a function that takes as a parameter your entire dataset and returns the accuracy of a Random Forest model.\
+
+```{r}
+RandomForest <- function(data){
+  
+  #### Select train 70% and test 30% randomly
+  rows <- sample(nrow(data), .7 * nrow(data))
+  train_data <- data[rows, ]
+  test_data <- data[-rows, ]
+  
+  
+  #### Train a model using our training data
+  model <- randomForest(TRTGRP_values ~ . , data = train_data)
+  
+  
+  #### Make predictions on the test data
+  predictions <- predict(model, test_data)
+  confusion_matrix <- with(test_data, table(predictions, TRTGRP_values))
+  
+  
+  #### Accuracy of our model
+  accuracy <- sum(diag(confusion_matrix)) / sum(confusion_matrix)
+  return(accuracy)
+}
+```
+
+First we will do Random Forest *without balancing* the data:
+```{r}
+(rf_not_balanced <- RandomForest(df_rdr4))
+```
+
+Balancing our data with *upsampling* method:
+```{r}
+up_data <- upSample(x = df_rdr4[, -ncol(df_rdr4)], y = df_rdr4$TRTGRP_values)  
+names(up_data)[names(up_data) == 'Class'] <- 'TRTGRP_values'
+table(up_data$TRTGRP_values) 
+```
+```{r, warning=FALSE}
+(rf_up <- RandomForest(df_rdr4))
+```
+
+Now we balance our data with *SMOTE* method:
+```{r}
+smote_data <- SMOTE(TRTGRP_values ~ ., data  = df_rdr4)                         
+table(smote_data$TRTGRP_values) 
+```
+```{r}
+(rf_smote <- RandomForest(smote_data))
+```
+
+Balancing our data with *downsampling* method:
+```{r}
+down_data <- downSample(x = df_rdr4[, -ncol(df_rdr4)], y = df_rdr4$TRTGRP_values)
+names(down_data)[names(down_data) == 'Class'] <- 'TRTGRP_values'
+table(down_data$TRTGRP_values) 
+```
+```{r, warning=FALSE}
+(rf_down <- RandomForest(down_data))
+```
+
+
+<br>
+
+
+
+**XGBoost**
+
+We create a function that takes as a parameter your entire dataset and returns the accuracy of a XgBoost model.\
+
+```{r}
+XgBoost <- function(data){
+  
+  #### Select train 70% and test 30% randomly
+  rows <- sample(nrow(data), .7 * nrow(data))
+  train_data <- data[rows, ] # train data
+  test_data <- data[-rows, ] # test data
+  
+  
+  ####  Independent and dependent variables for train and test
+  X_train = data.matrix(train_data[,-ncol(data)]) 
+  y_train = train_data[,ncol(data)] 
+    
+  X_test = data.matrix(test_data[,-ncol(data)])  
+  y_test = test_data[,ncol(data)] 
+  
+  
+  #### Convert the train and test data into xgboost matrix type
+  xgboost_train = xgb.DMatrix(data=X_train, label=y_train)
+  xgboost_test = xgb.DMatrix(data=X_test, label=y_test)
+  
+  
+  #### Train a model using our training data
+  model <- xgboost(data = xgboost_train,                      
+                   max.depth = 3, # max depth 
+                   nrounds = 50, # max number of boosting iterations
+                   verbose = 0) # omit printing 'train-rmse' for each iteration
+  
+  
+  #### Make predictions on the test data
+  pred_test <- predict(model, xgboost_test)
+  
+  
+  #### Convert prediction to factor type:
+  pred_test[(pred_test>3)] = 3
+  pred_y <- as.factor((levels(y_test))[round(pred_test)])
+  
+  
+  #### Create a confusion matrix:
+  conf_mat <- confusionMatrix(y_test, pred_y)
+  return(conf_mat$overall["Accuracy"])
+  
+}
+```
+
+First we will do XgBoost *without balancing* the data:
+```{r}
+(xgboost_not_balanced <- XgBoost(df_rdr3))
+```
+
+Balancing our data with *upsampling* method:
+```{r}
+up_data <- upSample(x = df_rdr3[, -ncol(df_rdr3)], y = df_rdr3$TRTGRP_values)         
+names(up_data)[names(up_data) == 'Class'] <- 'TRTGRP_values'
+table(up_data$TRTGRP_values) 
+```
+```{r, warning=FALSE}
+(xgboost_up <- XgBoost(df_rdr3))
+```
+
+Now we balance our data with *SMOTE* method:
+```{r}
+smote_data <- SMOTE(TRTGRP_values ~ ., data  = df_rdr3)                         
+table(smote_data$TRTGRP_values) 
+```
+```{r}
+(xgboost_smote <- XgBoost(smote_data))
+```
+
+
+Balancing our data with *downsampling* method:
+```{r}
+down_data <- downSample(x = df_rdr3[, -ncol(df_rdr3)], y = df_rdr3$TRTGRP_values)
+names(down_data)[names(down_data) == 'Class'] <- 'TRTGRP_values'
+table(down_data$TRTGRP_values) 
+```
+```{r}
+(xgboost_down <- XgBoost(down_data))
+```
+
+
+Summary:
+```{r}
+final_results <- data.frame("Boosting" = c(boosting_not_balanced, boosting_smote, boosting_down, boosting_up),
+                            "Random Forest" = c(rf_not_balanced, rf_smote, rf_down, rf_up),
+                            "XGBoost" = c(xgboost_not_balanced, xgboost_smote, xgboost_down, xgboost_up))
+rownames(final_results) <- c("No balancing", "SMOTE", "Down Sample", "Up Sample")
+final_results
+```
+
+Best result:
+```{r}
+value <- max(final_results[1:4,1:3])
+method <- names(final_results)[which(final_results == max(value), arr.ind=T)[, "col"]]
+balancing <- rownames(final_results)[which(final_results == max(value), arr.ind=T)[, "row"]]
+print(list(" Maximum Accuracy" = value, " Method" = method, "Balancing" = balancing))
+```
+
+
+<br>
+
+
+### 7.5 Classification COPD types
+
+Now we want to predict 3 different types of COPD.\
+
+Load clinic data and radiomic features. Since they differ in the number of id, we will only keep common ids.
+```{r}
+## Radar object
+file <- listRDA("rdr_L1_Andrea.rda")
+rdr_L1 <- file$rdr_L1
+df_rdr <- as.data.frame(assay(rdr_L1))
+
+## Clinic data
+clean_data <- read.delim("eclipse_all_CLEAN.txt")
+ch <- sapply(clean_data, is.character) # characters to factors
+clean_data[ch] <- lapply(clean_data[ch], as.factor)
+
+## Keep common ids
+id_in_rdr <- colnames(df_rdr) # id of rdr
+id_in_clinical <- rownames(clean_data) # id of clinical
+common_id <- Reduce(intersect, list(id_in_rdr,id_in_clinical)) # common id
+df_clinical <- clean_data %>% filter(row.names(clean_data) %in% common_id)
+df_rdr <- select(df_rdr, one_of(common_id))
+```
+
+View a summary of our variable of interest *GOLDCD*:
+```{r}
+table(df_clinical$GOLDCD)
+```
+
+
+There's *COPD_2*, *COPD_3* and *COPD_4.* *COPD_9* refers to patients that don't have COPD (*Non-smoker Controls* and *Smoker Controls*).
+
+Now we will rename the variables name. We want to predict different types of COPD, so we delete the *COPD_9*.
+```{r}
+df_clinical_COPD <- df_clinical[df_clinical$GOLDCD != 9, ] # delete non COPD subjects
+df_clinical_COPD$TRTGRP.t1 <- NULL # delete TRTGRP.t1 has only value COPD Subjects
+
+# Change names
+for(i in 1:length(df_clinical_COPD$GOLDCD)){
+  if(df_clinical_COPD$GOLDCD[i] == 2) df_clinical_COPD$GOLDCD[i] <- "COPD_2"
+  if(df_clinical_COPD$GOLDCD[i] == 3) df_clinical_COPD$GOLDCD[i] <- "COPD_3"
+  if(df_clinical_COPD$GOLDCD[i] == 4) df_clinical_COPD$GOLDCD[i] <- "COPD_4"
+}
+
+table(df_clinical_COPD$GOLDCD)
+```
+
+
+We will add this variable to the table of radiomic features.
+```{r}
+COPD_values <- as.numeric(as.factor(df_clinical_COPD$GOLDCD)) # convert to numeric
+df_rdr_COPD <- select(df_rdr, one_of(rownames(df_clinical_COPD))) # select patients in rdr that have COPD
+df_rdr4 <- rbind(df_rdr_COPD, "COPD_values" = COPD_values) # add COPD to radiomic features
+df_rdr5 <- as.data.frame(t(df_rdr4)) 
+rownames(df_rdr5) <- colnames(df_rdr4) # put id names
+table(df_rdr5$COPD_values)
+```
+
+Check how much data we have of each type:
+```{r, out.width="50%"}
+barplot(prop.table(table(COPD_values)), col = rainbow(3), ylim = c(0, 1), main = "COPD_df_types Distribution")
+```
+
+We don't have balanced data, specially for *COPD_4*.\
+
+We will repeat the same steps to predict this variable as we did in the section before.
+
+
+<br>
+
+
+**Boosting**
+
+```{r}
+Boosting2 <- function(data){
+  
+  #### Select train 70% and test 30% randomly
+  rows <- sample(nrow(data), .7 * nrow(data))
+  train_data <- data[rows, ] # train data
+  test_data <- data[-rows, ] # test data
+  
+  #### Train a model using our training data
+  model_gbm <- gbm(COPD_values ~.,
+                data = train_data,
+                distribution = "multinomial",
+                cv.folds = 10,
+                shrinkage = .01,
+                n.minobsinnode = 10,
+                n.trees = 500)       # 500 tress to be built
+  
+  #### Make predictions on the test data
+  pred_test <- predict.gbm(object = model_gbm,
+                   newdata = test_data,
+                   n.trees = 500,           # 500 tress to be built
+                   type = "response")
+  
+  #### Create a confusion matrix:
+  class_names <- colnames(pred_test)[apply(pred_test, 1, which.max)]
+  result <- data.frame(test_data$COPD_values, class_names)
+  conf_mat <- confusionMatrix(as.factor(test_data$COPD_values), as.factor(class_names))
+  
+  return(conf_mat$overall["Accuracy"]) # return Accuracy
+}
+```
+
+First we will do Boosting *without balancing* the data:
+```{r, warning=FALSE}
+(boosting_not_balanced2 <- Boosting2(df_rdr5))
+```
+
+Balancing our data with *upsampling* method:
+```{r, warning=FALSE}
+up_data <- upSample(x = df_rdr5[, -ncol(df_rdr5)], y = df_rdr5$COPD_values)     
+up_data <- cbind(data.frame(up_data$x), data.frame(up_data$y))
+names(up_data)[names(up_data) == 'up_data.y'] <- 'COPD_values'
+table(up_data$COPD_values) 
+```
+```{r, warning=FALSE}
+(boosting_up2 <- Boosting2(up_data))
+```
+
+Balancing our data with *SMOTE* method:
+```{r}
+df_rdr5$COPD_values <- as.factor(df_rdr5$COPD_values)
+smote_data <- SMOTE(COPD_values ~ ., data  = df_rdr5)                         
+table(smote_data$COPD_values) 
+```
+```{r, warning=FALSE}
+(boosting_smote2 <- Boosting2(smote_data))
+```
+
+Balancing our data with *downsampling* method:
+```{r}
+down_data <- downSample(x = df_rdr5[, -ncol(df_rdr5)], y = df_rdr5$COPD_values)
+names(down_data)[names(down_data) == 'Class'] <- 'COPD_values'
+table(down_data$COPD_values)
+```
+```{r, warning=FALSE}
+(boosting_down2 <- Boosting2(down_data))
+```
+
+
+
+<br>
+
+
+**Random Forest**
+
+```{r}
+# With Random Forest we can't have columns starting with numbers, so we will change them and add an A before the number
+df_rdr6 <- df_rdr5
+# Columns that start with numbers
+names_number <- colnames(df_rdr6 %>% dplyr:: select(starts_with(c("0","1","2","3","4","5","6","7","8","9"))))
+# Add and A before the number
+names_changed <- unlist(lapply(names_number, function(x) paste("A", x, sep="")))
+# Change the names
+setnames(df_rdr6, old=names_number, new = names_changed, skip_absent=TRUE)
+```
+
+```{r}
+RandomForest2 <- function(data){
+  
+  #### Select train 70% and test 30% randomly
+  rows <- sample(nrow(data), .7 * nrow(data))
+  train_data <- data[rows, ]
+  test_data <- data[-rows, ]
+  
+  
+  #### Train a model using our training data
+  model <- randomForest(COPD_values ~ . , data = train_data)
+  
+  
+  #### Make predictions on the test data
+  predictions <- predict(model, test_data)
+  confusion_matrix <- with(test_data, table(predictions, COPD_values))
+  
+  
+  #### Accuracy of our model
+  accuracy <- sum(diag(confusion_matrix)) / sum(confusion_matrix)
+  return(accuracy)
+}
+```
+
+First we will do Random Forest *without balancing* the data:
+```{r, warning=FALSE}
+(rf_not_balanced2 <- RandomForest2(df_rdr6))
+```
+
+Balancing our data with *upsampling* method:
+```{r, warning=FALSE}
+up_data <- upSample(x = df_rdr6[, -ncol(df_rdr6)], y = df_rdr6$COPD_values)
+names(up_data)[names(up_data) == 'Class'] <- 'COPD_values'
+table(up_data$COPD_values) 
+```
+```{r, warning=FALSE}
+(rf_up2 <- RandomForest2(df_rdr6))
+```
+
+
+Now we balance our data with *SMOTE* method:
+```{r}
+df_rdr7 <- df_rdr6
+df_rdr7$COPD_values <- as.factor(df_rdr7$COPD_values)
+smote_data <- SMOTE(COPD_values ~ ., data = df_rdr7)                          
+table(smote_data$COPD_values) 
+```
+```{r}
+(rf_smote2 <- RandomForest2(smote_data))
+```
+
+Balancing our data with *downsampling* method:
+```{r}
+down_data <- downSample(x = df_rdr6[, -ncol(df_rdr6)], y = df_rdr6$COPD_values)
+names(down_data)[names(down_data) == 'Class'] <- 'COPD_values'
+table(down_data$COPD_values) 
+```
+```{r, warning=FALSE}
+(rf_down2 <- RandomForest2(down_data))
+```
+
+
+
+<br>
+
+
+**XGBoost**
+
+```{r}
+XgBoost2 <- function(data){
+  
+  #### Select train 70% and test 30% randomly
+  rows <- sample(nrow(data), .7 * nrow(data))
+  train_data <- data[rows, ] # train data
+  test_data <- data[-rows, ] # test data
+  
+  
+  ####  Independent and dependent variables for train and test
+  X_train = data.matrix(train_data[,-ncol(data)]) 
+  y_train = train_data[,ncol(data)] 
+    
+  X_test = data.matrix(test_data[,-ncol(data)])  
+  y_test = test_data[,ncol(data)] 
+  
+  
+  #### Convert the train and test data into xgboost matrix type
+  xgboost_train = xgb.DMatrix(data=X_train, label=y_train)
+  xgboost_test = xgb.DMatrix(data=X_test, label=y_test)
+  
+  
+  #### Train a model using our training data
+  model <- xgboost(data = xgboost_train,                      
+                   max.depth = 3, # max depth 
+                   nrounds = 50, # max number of boosting iterations
+                   verbose = 0) # omit printing 'train-rmse' for each iteration
+  
+  
+  #### Make predictions on the test data
+  pred_test <- predict(model, xgboost_test)
+  
+  
+  #### Convert prediction to factor type:
+  pred_test[(pred_test>3)] = 3
+  pred_y <- as.factor((levels(y_test))[round(pred_test)])
+  
+  
+  #### Create a confusion matrix:
+  conf_mat <- confusionMatrix(y_test, pred_y)
+  return(conf_mat$overall["Accuracy"])
+  
+}
+```
+
+First we will do XgBoost *without balancing* the data:
+```{r}
+(xgboost_not_balanced2 <- XgBoost2(df_rdr5))
+```
+
+Balancing our data with *upsampling* method:
+```{r}
+up_data <- upSample(x = df_rdr5[, -ncol(df_rdr5)], y = as.factor(df_rdr5$COPD_values))
+names(up_data)[names(up_data) == 'Class'] <- 'COPD_values'
+table(up_data$COPD_values) 
+```
+```{r, warning=FALSE}
+df_rdr5$COPD_values <- as.factor(df_rdr5$COPD_values)
+(xgboost_up2 <- XgBoost2(df_rdr5))
+```
+
+Now we balance our data with *SMOTE* method:
+```{r}
+df_rdr5$COPD_values <- as.factor(df_rdr5$COPD_values)
+smote_data <- SMOTE(COPD_values ~ ., data  = df_rdr5)                         
+table(smote_data$COPD_values) 
+```
+```{r}
+(xgboost_smote2 <- XgBoost2(smote_data))
+```
+
+
+
+<br>
+
+
+Summary of the final results:
+```{r}
+final_results2 <- data.frame("Boosting" = c(boosting_not_balanced2, boosting_smote2, boosting_down2, boosting_up2),
+                            "Random Forest" = c(rf_not_balanced2, rf_smote2, rf_down2, rf_up2),
+                            "XGBoost" = c(xgboost_not_balanced2, xgboost_smote2, 0, xgboost_up2))
+rownames(final_results2) <- c("No balancing", "SMOTE", "Down Sample", "Up Sample")                          
+final_results2
+```
+
+Best result:
+```{r}
+value2 <- max(final_results2[1:4,1:3])
+method2 <- names(final_results2)[which(final_results2 == max(value2), arr.ind=T)[, "col"]]
+balancing2 <- rownames(final_results2)[which(final_results2 == max(value2), arr.ind=T)[, "row"]]
+print(list(" Maximum Accuracy" = value2, " Method" = method2, "Balancing" = balancing2))
+```
+
+
+
+
