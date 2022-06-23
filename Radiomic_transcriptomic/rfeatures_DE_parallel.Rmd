@@ -1,0 +1,1815 @@
+---
+title: "test parallel"
+output: pdf_document
+date: '2022-06-13'
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning=FALSE, message=FALSE, cache = TRUE)
+knitr::opts_chunk$set(tidy.opts = list(width.cutoff = 80), tidy = TRUE)
+```
+
+
+```{r libraries}
+library(limma)
+library(sva)
+library(ggplot2)
+library(org.Hs.eg.db)
+library(annotate)
+library(hgu133plus2.db)
+library(clusterProfiler)
+library(enrichplot)
+```
+
+
+This analysis will be performed with counts from **sputum samples**:  
+
+```{r load_data}
+load("/Users/carlacasanovasuarez/Documents/Master Bioinformatics UAB/Prácticas Radiomics/Radiomic features/Results_rfeatures/R objects/rdr_assay_scaled.rda")
+load("/Users/carlacasanovasuarez/Documents/Master Bioinformatics UAB/Prácticas Radiomics/Radiomic features/Results_rfeatures/R objects/sputum_eset_countsOK.rda")
+load("/Users/carlacasanovasuarez/Documents/Master Bioinformatics UAB/Prácticas Radiomics/Radiomic features/Results_rfeatures/R objects/sputum_eset_phenoOK.rda")
+```
+
+
+```{r variables_indv}
+variables_interest <- data.frame(Sex = as.factor(phenoDataFrame$SEX), 
+                                 Age = phenoDataFrame$AGE, 
+                                 Dwalk = phenoDataFrame$DWALK,
+                                 BMI = phenoDataFrame$BMI,
+                                 Smoke_history = phenoDataFrame$SUSMHS,
+                                 Years_smoke = phenoDataFrame$SUSMYR,
+                                 Cough = as.factor(phenoDataFrame$COUGH),
+                                 ex_first_year = phenoDataFrame$Y1EXBS,
+                                 Group = as.factor(phenoDataFrame$GROUP_bin),
+                                 N_cigarrete_day = phenoDataFrame$SUCGSMDY,
+                                 Cr_bronchitis = as.factor(phenoDataFrame$CBRONCH),
+                                 Cr_wheezeng = as.factor(phenoDataFrame$ATS3EG),
+                                 history_asthma = as.factor(phenoDataFrame$ATS5G),
+                                 fume_expose = as.factor(phenoDataFrame$ATS6C),
+                                 dusty_expose = as.factor(phenoDataFrame$ATS6B),
+                                 phlegm = as.factor(phenoDataFrame$PHLEGM),
+                                 heart_failure = as.factor(phenoDataFrame$ATS8F),
+                                 stroke = as.factor(phenoDataFrame$ATS8E),
+                                 diabetes = as.factor(phenoDataFrame$ATS8L),
+                                 osteoporosis = as.factor(phenoDataFrame$ATS8H),
+                                 FEVVCPD = phenoDataFrame$FEVVCPD,
+                                 FEV1PSPC = phenoDataFrame$FEV1PSPC,
+                                 TLC = phenoDataFrame$TLC,
+                                 FRC = phenoDataFrame$FRC,
+                                 Low_percentile = phenoDataFrame$LOW15PCT,
+                                 row.names = rownames(phenoDataFrame))
+
+# Code for removing columns with some NA
+variables_interest <- variables_interest[ , apply(variables_interest, 2, function(x) !any(is.na(x)))]
+
+# Add radiomic features without grouping them
+identical(colnames(rdr_assay), rownames(variables_interest))
+variables_interest <- cbind(variables_interest, t(rdr_assay))
+
+## Select counts
+countData <- counts.ok[rowSums(counts.ok) > 10, ]
+
+# count unique values for each variable
+sapply(lapply(variables_interest, unique), length)
+
+# Remove variables with just one factor
+variables_interest[,"Smoke_history"] <- NULL
+```
+
+```{r list_loop}
+r.features <- rownames(rdr_assay)
+# Features que faltan por calcular
+#small.r.features <- r.features[25]
+
+# Prepare data in object: variables_interest
+names(variables_interest)[names(variables_interest) == "10Percentile.original"] <- "X10Percentile.original"
+names(variables_interest)[names(variables_interest) == "90Percentile.original"] <- "X90Percentile.original"
+
+# Prepare data in object: small.r.features
+r.features[15] <- "X10Percentile.original"
+r.features[16] <- "X90Percentile.original"
+```
+
+Compute analysis for individual features by iterating (code parallelize):  
+
+```{r rf_indv_parallel, eval=FALSE}
+library(parallel)
+
+# Use the detectCores() function to find the number of cores in system
+no_cores <- detectCores()
+
+# Setup cluster: good practice not to use all the cores
+# Don't use all the cores at ISGlobal's cluster!!
+clust <- makeCluster(no_cores-3) #This line will take time
+
+# Export objects from global environment
+clusterExport(cl = clust, varlist = c("variables_interest", "countData", "r.features"))
+
+# Export packages to use
+clusterEvalQ(clust, {
+  library(tidyverse)
+  library(limma)
+  library(sva)
+})
+
+de_radiomic_features_indv <- function(x) {
+  
+  # Null formula
+  m.model <- "~ Group + Sex + Age + Dwalk + FEV1PSPC + fume_expose + dusty_expose + history_asthma + Cough + BMI + Cr_wheezeng"
+  
+  # -------SVA------ 
+  # Create a model with the feature and a null model
+  mod1 <- model.matrix(formula(paste(m.model, x, sep = "+")), data=variables_interest) 
+  mod0 <- model.matrix( ~ Group + Sex + Age + Dwalk + FEV1PSPC + fume_expose + dusty_expose + history_asthma + Cough + BMI + Cr_wheezeng, data=variables_interest)
+  
+  # This estimates the required number of surrogate variables
+  res <- svaseq(countData, mod1, mod0)
+  # Add SVs to column data information
+  variables_interest_sva <- data.frame(variables_interest, res$sv)
+  
+  # Add sva names to formula
+  sva.names <- colnames(variables_interest_sva[,(ncol(variables_interest_sva)+1-res$n.sv):ncol(variables_interest_sva)])
+  sva.collapsed <- paste(sva.names, collapse = "+")
+  
+  # -------VOOM-------
+  # Normalize data with voom and add tumor stage as covariate in design 
+  design <- model.matrix(formula(paste(m.model, x, sva.collapsed, sep = "+")), data=variables_interest_sva)
+  v <- voom(countData, design=design, plot=FALSE)
+  
+  # fit the model
+  fit <- lmFit(v, design)
+  fit <- eBayes(fit)
+  
+  # Store the object
+  save(fit, file = paste("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/", x, ".rda", sep = ""))
+}
+
+# With parallel
+system.time(result <- parLapply(clust,r.features, de_radiomic_features_indv))
+# Good practise to do that at the end
+stopCluster(clust)
+```
+
+## Results DE of individual radiomic features  
+
+Check summaries of voom results for each feature:  
+
+```{r load_results_elongation}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/Elongation.original.rda")
+
+summa.fit.elongation <- decideTests(fit)
+
+summary(summa.fit.elongation)
+```
+
+```{r load_results_flatness}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/Flatness.original.rda")
+
+summa.fit.flatness <- decideTests(fit)
+summary(summa.fit.flatness)
+```
+
+
+```{r load_results_leastAxis}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/LeastAxisLength.original.rda")
+
+summa.fit.leastAxis <- decideTests(fit)
+summary(summa.fit.leastAxis)
+```
+
+
+```{r load_results_majorAxis}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/MajorAxisLength.original.rda")
+
+summa.fit.majorAxis <- decideTests(fit)
+summary(summa.fit.majorAxis)
+```
+
+
+```{r load_results_2ddCol}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/Maximum2DDiameterColumn.original.rda")
+
+summa.fit.2ddCol <- decideTests(fit)
+summary(summa.fit.2ddCol)
+```
+
+
+```{r load_results_2ddrow}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/Maximum2DDiameterRow.original.rda")
+
+summa.fit.2ddRow <- decideTests(fit)
+summary(summa.fit.2ddRow)
+```
+
+
+```{r load_results_2ddSlic}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/Maximum2DDiameterSlice.original.rda")
+
+summa.fit.2ddSlic <- decideTests(fit)
+summary(summa.fit.2ddSlic)
+```
+
+
+```{r load_results_3ddDia}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/Maximum3DDiameter.original.rda")
+
+summa.fit.3ddDia <- decideTests(fit)
+summary(summa.fit.3ddDia)
+```
+
+
+```{r load_results_MeshVol}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/MeshVolume.original.rda")
+
+summa.fit.MeshVol <- decideTests(fit)
+summary(summa.fit.MeshVol)
+```
+
+
+```{r load_results_MinAxis}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/MinorAxisLength.original.rda")
+
+summa.fit.MinAxis <- decideTests(fit)
+summary(summa.fit.MinAxis)
+```
+
+
+```{r load_results_sphe}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/Sphericity.original.rda")
+
+# Store: toptable, p.value, summary
+summa.fit.sphe <- decideTests(fit)
+toptable.sphericity <- topTable(fit, coef="Sphericity.original", number = dim(counts.ok)[1])
+toptable.sphericity <- toptable.sphericity[order(toptable.sphericity$P.Value),]
+p.val.voom <- as.data.frame(fit$p.value)
+
+# P-value distribution of results computed by limma
+ggplot(data = p.val.voom, aes(x = Sphericity.original)) +
+geom_histogram(bins = 100)
+
+# QQplot plot for p-values computed by limma
+GWASTools::qqPlot(p.val.voom$Sphericity.original)
+
+summary(summa.fit.sphe)
+head(toptable.sphericity, 10)
+```
+
+
+```{r load_results_surAr}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/SurfaceArea.original.rda")
+
+summa.fit.surAr <- decideTests(fit)
+summary(summa.fit.surAr)
+```
+
+
+```{r load_results_surVol}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/SurfaceVolumeRatio.original.rda")
+
+summa.fit.surVol <- decideTests(fit)
+summary(summa.fit.surVol)
+```
+
+
+```{r load_results_voxVol}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/VoxelVolume.original.rda")
+
+summa.fit.voxVol <- decideTests(fit)
+summary(summa.fit.voxVol)
+```
+
+
+```{r load_results_totEn}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/TotalEnergy.original.rda")
+
+summa.fit.totEn <- decideTests(fit)
+summary(summa.fit.totEn)
+```
+
+
+```{r load_results_unif}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/Uniformity.original.rda")
+
+summa.fit.unif <- decideTests(fit)
+summary(summa.fit.unif)
+```
+
+
+```{r load_results_var}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/Variance.original.rda")
+
+# Store toptable, p-value, summary
+summa.fit.var <- decideTests(fit)
+toptable.variance <- topTable(fit, coef="Variance.original", number = dim(counts.ok)[1])
+toptable.variance <- toptable.variance[order(toptable.variance$P.Value),]
+p.val.voom <- as.data.frame(fit$p.value)
+
+# P-value distribution of results computed by limma
+ggplot(data = p.val.voom, aes(x = Variance.original)) +
+geom_histogram(bins = 100)
+
+# QQplot plot for p-values computed by limma
+GWASTools::qqPlot(p.val.voom$Variance.original)
+
+summary(summa.fit.var)
+head(toptable.variance, 10)
+```
+
+
+```{r load_results_auto}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/Autocorrelation.original.rda")
+
+# Store toptable, p.value, summary
+summa.fit.auto <- decideTests(fit)
+toptable.autoc <- topTable(fit, coef="Autocorrelation.original", number = dim(counts.ok)[1])
+toptable.autoc <- toptable.autoc[order(toptable.autoc$P.Value),]
+p.val.voom <- as.data.frame(fit$p.value)
+
+# P-value distribution of results computed by limma
+ggplot(data = p.val.voom, aes(x = Autocorrelation.original)) +
+geom_histogram(bins = 100)
+
+# QQplot plot for p-values computed by limma
+GWASTools::qqPlot(p.val.voom$Autocorrelation.original)
+
+summary(summa.fit.auto)
+head(toptable.autoc, 10)
+```
+
+
+```{r load_results_clustPro}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/ClusterProminence.original.rda")
+
+summa.fit.clustPro <- decideTests(fit)
+summary(summa.fit.clustPro)
+```
+
+
+```{r load_results_clustSh}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/ClusterShade.original.rda")
+
+summa.fit.clustSh <- decideTests(fit)
+toptable.clustSh <- topTable(fit, coef="ClusterShade.original", number = dim(counts.ok)[1])
+p.val.voom <- as.data.frame(fit$p.value)
+
+# P-value distribution of results computed by limma
+ggplot(data = p.val.voom, aes(x = ClusterShade.original)) +
+geom_histogram(bins = 100)
+
+# QQplot plot for p-values computed by limma
+GWASTools::qqPlot(p.val.voom$ClusterShade.original)
+
+summary(summa.fit.clustSh)
+head(toptable.clustSh, 10)
+```
+
+
+```{r load_results_clustTen}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/ClusterTendency.original.rda")
+
+summa.fit.clustTen <- decideTests(fit)
+summary(summa.fit.clustTen)
+```
+
+
+```{r load_results_cont}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/Contrast.original.rda")
+
+# Store toptable, p.value, summary
+summa.fit.cont <- decideTests(fit)
+toptable.cont <- topTable(fit, coef="Contrast.original", number = dim(counts.ok)[1])
+toptable.cont <- toptable.cont[order(toptable.cont$P.Value),]
+p.val.voom <- as.data.frame(fit$p.value)
+
+# P-value distribution of results computed by limma
+ggplot(data = p.val.voom, aes(x = Contrast.original)) +
+geom_histogram(bins = 100)
+
+# QQplot plot for p-values computed by limma
+GWASTools::qqPlot(p.val.voom$Contrast.original)
+
+summary(summa.fit.cont)
+head(toptable.cont, 10)
+```
+
+
+```{r load_results_corr}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/Maximum2DDiameterColumn.original.rda")
+
+summa.fit.corr <- decideTests(fit)
+summary(summa.fit.corr)
+```
+
+
+```{r load_results_diffAv}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/DifferenceAverage.original.rda")
+
+# Store toptable, p.value, summary
+summa.fit.diffAv <- decideTests(fit)
+toptable.diffAv <- topTable(fit, coef="DifferenceAverage.original", number = dim(counts.ok)[1])
+toptable.diffAv <- toptable.diffAv[order(toptable.diffAv$P.Value),]
+p.val.voom <- as.data.frame(fit$p.value)
+
+# P-value distribution of results computed by limma
+ggplot(data = p.val.voom, aes(x = DifferenceAverage.original)) +
+geom_histogram(bins = 100)
+
+# QQplot plot for p-values computed by limma
+GWASTools::qqPlot(p.val.voom$DifferenceAverage.original)
+
+summary(summa.fit.diffAv)
+head(toptable.diffAv, 10)
+```
+
+
+```{r load_results_diffEnt}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/DifferenceEntropy.original.rda")
+
+summa.fit.diffEnt <- decideTests(fit)
+summary(summa.fit.diffEnt)
+```
+
+
+```{r load_results_diffVar}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/DifferenceVariance.original.rda")
+
+summa.fit.diffVar <- decideTests(fit)
+summary(summa.fit.diffVar)
+```
+
+
+```{r load_results_idO}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/Id.original.rda")
+
+# Store toptable, p.value, summary
+summa.fit.idO <- decideTests(fit)
+toptable.idO <- topTable(fit, coef="Id.original", number = dim(counts.ok)[1])
+toptable.idO <- toptable.idO[order(toptable.idO$P.Value),]
+p.val.voom <- as.data.frame(fit$p.value)
+
+# P-value distribution of results computed by limma
+ggplot(data = p.val.voom, aes(x = Id.original)) +
+geom_histogram(bins = 100)
+
+# QQplot plot for p-values computed by limma
+GWASTools::qqPlot(p.val.voom$Id.original)
+
+summary(summa.fit.idO)
+head(toptable.idO, 10)
+```
+
+
+```{r load_results_idmO}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/Idm.original.rda")
+
+# Store toptable, p.value, summary
+summa.fit.idmO <- decideTests(fit)
+toptable.idmO <- topTable(fit, coef="Idm.original", number = dim(counts.ok)[1])
+toptable.idmO <- toptable.idmO[order(toptable.idmO$P.Value),]
+p.val.voom <- as.data.frame(fit$p.value)
+
+# P-value distribution of results computed by limma
+ggplot(data = p.val.voom, aes(x = Idm.original)) +
+geom_histogram(bins = 100)
+
+# QQplot plot for p-values computed by limma
+GWASTools::qqPlot(p.val.voom$Idm.original)
+
+summary(summa.fit.idmO)
+head(toptable.idmO, 10)
+```
+
+
+```{r load_results_idmnO}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/Idmn.original.rda")
+
+# Store toptable, p.value, summary
+summa.fit.idmnO <- decideTests(fit)
+toptable.idmnO <- topTable(fit, coef="Idmn.original", number = dim(counts.ok)[1])
+toptable.idmnO <- toptable.idmnO[order(toptable.idmnO$P.Value),]
+p.val.voom <- as.data.frame(fit$p.value)
+
+# P-value distribution of results computed by limma
+ggplot(data = p.val.voom, aes(x = Idmn.original)) +
+geom_histogram(bins = 100)
+
+# QQplot plot for p-values computed by limma
+GWASTools::qqPlot(p.val.voom$Idmn.original)
+
+summary(summa.fit.idmnO)
+head(toptable.idmnO, 10)
+```
+
+
+```{r load_results_idnO}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/Idn.original.rda")
+
+summa.fit.idnO <- decideTests(fit)
+toptable.idnO <- topTable(fit, coef="Idn.original", number = dim(counts.ok)[1])
+toptable.idnO <- toptable.idnO[order(toptable.idnO$P.Value),]
+p.val.voom <- as.data.frame(fit$p.value)
+
+# P-value distribution of results computed by limma
+ggplot(data = p.val.voom, aes(x = Idn.original)) +
+geom_histogram(bins = 100)
+
+# QQplot plot for p-values computed by limma
+GWASTools::qqPlot(p.val.voom$Idn.original)
+
+summary(summa.fit.idnO)
+head(toptable.idnO, 10)
+```
+
+
+```{r load_results_invV}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/InverseVariance.original.rda")
+
+summa.fit.invV <- decideTests(fit)
+toptable.invV <- topTable(fit, coef="InverseVariance.original", number = dim(counts.ok)[1])
+toptable.invV <- toptable.invV[order(toptable.invV$P.Value),]
+p.val.voom <- as.data.frame(fit$p.value)
+
+# P-value distribution of results computed by limma
+ggplot(data = p.val.voom, aes(x = InverseVariance.original)) +
+geom_histogram(bins = 100)
+
+# QQplot plot for p-values computed by limma
+GWASTools::qqPlot(p.val.voom$InverseVariance.original)
+
+summary(summa.fit.invV)
+head(toptable.invV, 10)
+```
+
+
+```{r load_results_jAv}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/JointAverage.original.rda")
+
+summa.fit.jAv <- decideTests(fit)
+toptable.jAv <- topTable(fit, coef="JointAverage.original", number = dim(counts.ok)[1])
+toptable.jAv <- toptable.jAv[order(toptable.jAv$P.Value),]
+p.val.voom <- as.data.frame(fit$p.value)
+
+# P-value distribution of results computed by limma
+ggplot(data = p.val.voom, aes(x = JointAverage.original)) + 
+  geom_histogram(bins = 100)
+
+# QQplot plot for p-values computed by limma
+GWASTools::qqPlot(p.val.voom$JointAverage.original)
+
+summary(summa.fit.jAv)
+head(toptable.jAv, 10)
+```
+
+
+```{r load_results_jEn}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/JointEnergy.original.rda")
+
+summa.fit.jEn <- decideTests(fit)
+summary(summa.fit.jEn)
+```
+
+
+```{r load_results_jEnt}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/JointEntropy.original.rda")
+
+summa.fit.jEnt <- decideTests(fit)
+summary(summa.fit.jEnt)
+```
+
+
+```{r load_results_mcc}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/MCC.original.rda")
+
+summa.fit.mcc <- decideTests(fit)
+summary(summa.fit.mcc)
+```
+
+
+```{r load_results_maxProb}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/MaximumProbability.original.rda")
+
+summa.fit.maxProb <- decideTests(fit)
+summary(summa.fit.maxProb)
+```
+
+
+```{r load_results_sumAv}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/SumAverage.original.rda")
+
+summa.fit.sumAv <- decideTests(fit)
+toptable.sumAv <- topTable(fit, coef="SumAverage.original", number = dim(counts.ok)[1])
+toptable.sumAv <- toptable.sumAv[order(toptable.sumAv$P.Value),]
+p.val.voom <- as.data.frame(fit$p.value)
+
+# P-value distribution of results computed by limma
+ggplot(data = p.val.voom, aes(x = SumAverage.original)) + 
+  geom_histogram(bins = 100)
+
+# QQplot plot for p-values computed by limma
+GWASTools::qqPlot(p.val.voom$SumAverage.original)
+
+summary(summa.fit.sumAv)
+head(toptable.sumAv, 10)
+```
+
+
+```{r load_results_sumEnt}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/SumEntropy.original.rda")
+
+summa.fit.sumEnt <- decideTests(fit)
+summary(summa.fit.sumEnt)
+```
+
+
+```{r load_results_sumSq}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/SumSquares.original.rda")
+
+summa.fit.sumSq <- decideTests(fit)
+summary(summa.fit.sumSq)
+```
+
+
+```{r load_results_glNU}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/GrayLevelNonUniformity.original.rda")
+
+summa.fit.glNU <- decideTests(fit)
+summary(summa.fit.glNU)
+```
+
+
+```{r load_results_glNUn}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/GrayLevelNonUniformityNormalized.original.rda")
+
+summa.fit.glNUn <- decideTests(fit)
+summary(summa.fit.glNUn)
+```
+
+
+```{r load_results_glVar}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/GrayLevelVariance.original.rda")
+
+summa.fit.glVar <- decideTests(fit)
+summary(summa.fit.glVar)
+```
+
+
+```{r load_results_hglEm}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/HighGrayLevelEmphasis.original.rda")
+
+summa.fit.hglEm <- decideTests(fit)
+toptable.hglEm <- topTable(fit, coef="HighGrayLevelEmphasis.original", number = dim(counts.ok)[1])
+toptable.hglEm <- toptable.hglEm[order(toptable.hglEm$P.Value),]
+p.val.voom <- as.data.frame(fit$p.value)
+
+# P-value distribution of results computed by limma
+ggplot(data = p.val.voom, aes(x = HighGrayLevelEmphasis.original)) + 
+  geom_histogram(bins = 100)
+
+# QQplot plot for p-values computed by limma
+GWASTools::qqPlot(p.val.voom$HighGrayLevelEmphasis.original)
+
+summary(summa.fit.hglEm)
+head(toptable.hglEm, 10)
+```
+
+
+```{r load_results_lrEm}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/LongRunEmphasis.original.rda")
+
+summa.fit.lrEm <- decideTests(fit)
+summary(summa.fit.lrEm)
+```
+
+
+```{r load_results_lrHem}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/LongRunHighGrayLevelEmphasis.original.rda")
+
+summa.fit.lrHem <- decideTests(fit)
+summary(summa.fit.lrHem)
+```
+
+
+```{r load_results_lrLem}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/LongRunLowGrayLevelEmphasis.original.rda")
+
+summa.fit.lrLem <- decideTests(fit)
+toptable.lrLEm <- topTable(fit, coef="LongRunLowGrayLevelEmphasis.original", number = dim(counts.ok)[1])
+toptable.lrLEm <- toptable.lrLEm[order(toptable.lrLEm$P.Value),]
+p.val.voom <- as.data.frame(fit$p.value)
+
+# P-value distribution of results computed by limma
+ggplot(data = p.val.voom, aes(x = LongRunLowGrayLevelEmphasis.original)) + 
+  geom_histogram(bins = 100)
+
+# QQplot plot for p-values computed by limma
+GWASTools::qqPlot(p.val.voom$LongRunLowGrayLevelEmphasis.original)
+
+summary(summa.fit.lrLem)
+head(toptable.lrLEm, 10)
+```
+
+
+```{r load_results_lowGLRem}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/LowGrayLevelRunEmphasis.original.rda")
+
+summa.fit.lowGLRem <- decideTests(fit)
+toptable.lowGLRem <- topTable(fit, coef="LowGrayLevelRunEmphasis.original", number = dim(counts.ok)[1])
+toptable.lowGLRem <- toptable.lowGLRem[order(toptable.lowGLRem$P.Value),]
+p.val.voom <- as.data.frame(fit$p.value)
+
+# P-value distribution of results computed by limma
+ggplot(data = p.val.voom, aes(x = LowGrayLevelRunEmphasis.original)) + 
+  geom_histogram(bins = 100)
+
+# QQplot plot for p-values computed by limma
+GWASTools::qqPlot(p.val.voom$LowGrayLevelRunEmphasis.original)
+
+summary(summa.fit.lowGLRem)
+head(toptable.lowGLRem, 10)
+```
+
+
+```{r load_results_runEnt}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/RunEntropy.original.rda")
+
+summa.fit.runEnt <- decideTests(fit)
+summary(summa.fit.runEnt)
+```
+
+
+```{r load_results_rlNU}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/RunLengthNonUniformity.original.rda")
+
+summa.fit.rlNU <- decideTests(fit)
+summary(summa.fit.rlNU)
+```
+
+
+```{r load_results_rlNUn}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/RunLengthNonUniformityNormalized.original.rda")
+
+summa.fit.rlNUn <- decideTests(fit)
+summary(summa.fit.rlNUn)
+```
+
+
+```{r load_results_rPer}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/RunPercentage.original.rda")
+
+summa.fit.rPer <- decideTests(fit)
+toptable.rPer <- topTable(fit, coef="RunPercentage.original", number = dim(counts.ok)[1])
+toptable.rPer <- toptable.rPer[order(toptable.rPer$P.Value),]
+p.val.voom <- as.data.frame(fit$p.value)
+
+# P-value distribution of results computed by limma
+ggplot(data = p.val.voom, aes(x = RunPercentage.original)) + 
+  geom_histogram(bins = 100)
+
+# QQplot plot for p-values computed by limma
+GWASTools::qqPlot(p.val.voom$RunPercentage.original)
+
+summary(summa.fit.rPer)
+head(toptable.rPer, 10)
+```
+
+
+```{r load_results_rVar}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/RunVariance.original.rda")
+
+summa.fit.rVar <- decideTests(fit)
+summary(summa.fit.rVar)
+```
+
+
+```{r load_results_shREm}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/ShortRunEmphasis.original.rda")
+
+summa.fit.shREM <- decideTests(fit)
+summary(summa.fit.shREM)
+```
+
+
+```{r load_results_shRH}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/ShortRunHighGrayLevelEmphasis.original.rda")
+
+summa.fit.shRH <- decideTests(fit)
+summary(summa.fit.shRH)
+```
+
+
+```{r load_results_shRL}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/ShortRunLowGrayLevelEmphasis.original.rda")
+
+summa.fit.shRL <- decideTests(fit)
+summary(summa.fit.shRL)
+```
+
+
+```{r load_results_hglZEM}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/HighGrayLevelZoneEmphasis.original.rda")
+
+summa.fit.hglZEM <- decideTests(fit)
+summary(summa.fit.hglZEM)
+```
+
+
+```{r load_results_larAEm}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/LargeAreaEmphasis.original.rda")
+
+summa.fit.larAEm <- decideTests(fit)
+toptable.larAEm <- topTable(fit, coef="LargeAreaEmphasis.original", number = dim(counts.ok)[1])
+toptable.larAEm <- toptable.larAEm[order(toptable.larAEm$P.Value),]
+p.val.voom <- as.data.frame(fit$p.value)
+
+# P-value distribution of results computed by limma
+ggplot(data = p.val.voom, aes(x = LargeAreaEmphasis.original)) + 
+  geom_histogram(bins = 100)
+
+# QQplot plot for p-values computed by limma
+GWASTools::qqPlot(p.val.voom$LargeAreaEmphasis.original)
+
+summary(summa.fit.larAEm)
+head(toptable.larAEm, 10)
+```
+
+
+```{r load_results_lowGLem}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/LowGrayLevelEmphasis.original.rda")
+
+summa.fit.lowGLem <- decideTests(fit)
+toptable.lowGLem <- topTable(fit, coef="LowGrayLevelEmphasis.original", number = dim(counts.ok)[1])
+toptable.lowGLem <- toptable.lowGLem[order(toptable.lowGLem$P.Value),]
+p.val.voom <- as.data.frame(fit$p.value)
+
+# P-value distribution of results computed by limma
+ggplot(data = p.val.voom, aes(x = LowGrayLevelEmphasis.original)) + 
+  geom_histogram(bins = 100)
+
+# QQplot plot for p-values computed by limma
+GWASTools::qqPlot(p.val.voom$LowGrayLevelEmphasis.original)
+
+summary(summa.fit.lowGLem)
+head(toptable.lowGLem, 10)
+```
+
+
+```{r load_results_larAHigh}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/LargeAreaHighGrayLevelEmphasis.original.rda")
+
+summa.fit.larAHigh <- decideTests(fit)
+toptable.larAHigh <- topTable(fit, coef="LargeAreaHighGrayLevelEmphasis.original", number = dim(counts.ok)[1])
+toptable.larAHigh <- toptable.larAHigh[order(toptable.larAHigh$P.Value),]
+p.val.voom <- as.data.frame(fit$p.value)
+
+# P-value distribution of results computed by limma
+ggplot(data = p.val.voom, aes(x = LargeAreaHighGrayLevelEmphasis.original)) + 
+  geom_histogram(bins = 100)
+
+# QQplot plot for p-values computed by limma
+GWASTools::qqPlot(p.val.voom$LargeAreaHighGrayLevelEmphasis.original)
+
+summary(summa.fit.larAHigh)
+head(toptable.larAHigh, 10)
+```
+
+
+```{r load_results_larALow}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/LargeAreaLowGrayLevelEmphasis.original.rda")
+
+summa.fit.larALow <- decideTests(fit)
+toptable.larALow <- topTable(fit, coef="LargeAreaLowGrayLevelEmphasis.original", number = dim(counts.ok)[1])
+toptable.larALow <- toptable.larALow[order(toptable.larALow$P.Value),]
+p.val.voom <- as.data.frame(fit$p.value)
+
+# P-value distribution of results computed by limma
+ggplot(data = p.val.voom, aes(x = LargeAreaLowGrayLevelEmphasis.original)) + 
+  geom_histogram(bins = 100)
+
+# QQplot plot for p-values computed by limma
+GWASTools::qqPlot(p.val.voom$LargeAreaLowGrayLevelEmphasis.original)
+
+summary(summa.fit.larALow)
+head(toptable.larALow)
+```
+
+
+```{r load_results_lowGLZem}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/LowGrayLevelZoneEmphasis.original.rda")
+
+summa.fit.lowGLZem <- decideTests(fit)
+summary(summa.fit.lowGLZem)
+```
+
+
+```{r load_results_sizZNU}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/SizeZoneNonUniformity.original.rda")
+
+summa.fit.sizZNU <- decideTests(fit)
+summary(summa.fit.sizZNU)
+```
+
+
+```{r load_results_sizZNUn}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/SizeZoneNonUniformityNormalized.original.rda")
+
+summa.fit.sizZNUn <- decideTests(fit)
+summary(summa.fit.sizZNUn)
+```
+
+
+```{r load_results_smAem}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/SmallAreaEmphasis.original.rda")
+
+summa.fit.smAem <- decideTests(fit)
+toptable.smAem <- topTable(fit, coef="SmallAreaEmphasis.original", number = dim(counts.ok)[1])
+toptable.smAem <- toptable.smAem[order(toptable.smAem$P.Value),]
+p.val.voom <- as.data.frame(fit$p.value)
+
+# P-value distribution of results computed by limma
+ggplot(data = p.val.voom, aes(x = SmallAreaEmphasis.original)) + 
+  geom_histogram(bins = 100)
+
+# QQplot plot for p-values computed by limma
+GWASTools::qqPlot(p.val.voom$SmallAreaEmphasis.original)
+
+summary(summa.fit.smAem)
+head(toptable.smAem, 10)
+```
+
+
+```{r load_results_smAHem}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/SmallAreaHighGrayLevelEmphasis.original.rda")
+
+summa.fit.smAHem <- decideTests(fit)
+toptable.smAHem <- topTable(fit, coef="SmallAreaHighGrayLevelEmphasis.original", number = dim(counts.ok)[1])
+toptable.smAHem <- toptable.idmnO[order(toptable.smAHem$P.Value),]
+p.val.voom <- as.data.frame(fit$p.value)
+
+# P-value distribution of results computed by limma
+ggplot(data = p.val.voom, aes(x = SmallAreaHighGrayLevelEmphasis.original)) + 
+  geom_histogram(bins = 100)
+
+# QQplot plot for p-values computed by limma
+GWASTools::qqPlot(p.val.voom$SmallAreaHighGrayLevelEmphasis.original)
+
+summary(summa.fit.smAHem)
+head(toptable.smAHem)
+```
+
+
+```{r load_results_smALem}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/SmallAreaLowGrayLevelEmphasis.original.rda")
+
+summa.fit.smALem <- decideTests(fit)
+toptable.smALem <- topTable(fit, coef="SmallAreaLowGrayLevelEmphasis.original", number = dim(counts.ok)[1])
+toptable.smALem <- toptable.smALem[order(toptable.smALem$P.Value),]
+p.val.voom <- as.data.frame(fit$p.value)
+
+# P-value distribution of results computed by limma
+ggplot(data = p.val.voom, aes(x = SmallAreaLowGrayLevelEmphasis.original)) + 
+  geom_histogram(bins = 100)
+
+# QQplot plot for p-values computed by limma
+GWASTools::qqPlot(p.val.voom$SmallAreaLowGrayLevelEmphasis.original)
+
+summary(summa.fit.smALem)
+head(toptable.smALem, 10)
+```
+
+
+```{r load_results_zoneEn}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/ZoneEntropy.original.rda")
+
+summa.fit.zoneEn <- decideTests(fit)
+summary(summa.fit.zoneEn)
+```
+
+
+```{r load_results_zonePer}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/ZonePercentage.original.rda")
+
+summa.fit.zonePer <- decideTests(fit)
+summary(summa.fit.zonePer)
+```
+
+
+```{r load_results_zoneVar}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/ZoneVariance.original.rda")
+
+summa.fit.zoneVar <- decideTests(fit)
+toptable.zoneVar <- topTable(fit, coef="ZoneVariance.original", number = dim(counts.ok)[1])
+toptable.zoneVar <- toptable.zoneVar[order(toptable.zoneVar$P.Value),]
+p.val.voom <- as.data.frame(fit$p.value)
+
+# P-value distribution of results computed by limma
+ggplot(data = p.val.voom, aes(x = ZoneVariance.original)) + 
+  geom_histogram(bins = 100)
+
+# QQplot plot for p-values computed by limma
+GWASTools::qqPlot(p.val.voom$ZoneVariance.original)
+
+summary(summa.fit.zoneVar)
+head(toptable.zoneVar, 10)
+```
+
+
+```{r load_results_depEn}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/DependenceEntropy.original.rda")
+
+summa.fit.depEn <- decideTests(fit)
+summary(summa.fit.depEn)
+```
+
+
+```{r load_results_depNU}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/DependenceNonUniformity.original.rda")
+
+summa.fit.depNU <- decideTests(fit)
+toptable.depNU <- topTable(fit, coef="DependenceNonUniformity.original", number = dim(counts.ok)[1])
+toptable.depNU <- toptable.depNU[order(toptable.depNU$P.Value),]
+p.val.voom <- as.data.frame(fit$p.value)
+
+# P-value distribution of results computed by limma
+ggplot(data = p.val.voom, aes(x = DependenceNonUniformity.original)) + 
+  geom_histogram(bins = 100)
+
+# QQplot plot for p-values computed by limma
+GWASTools::qqPlot(p.val.voom$DependenceNonUniformity.original)
+
+summary(summa.fit.depNU)
+head(toptable.depNU, 10)
+```
+
+
+```{r load_results_depNUn}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/DependenceNonUniformityNormalized.original.rda")
+
+summa.fit.depNUn <- decideTests(fit)
+summary(summa.fit.depNUn)
+```
+
+
+```{r load_results_depVar}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/DependenceVariance.original.rda")
+
+summa.fit.depVar <- decideTests(fit)
+summary(summa.fit.depVar)
+```
+
+
+```{r load_results_hglRem}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/HighGrayLevelRunEmphasis.original.rda")
+
+summa.fit.hglRem <- decideTests(fit)
+toptable.hglRem <- topTable(fit, coef="HighGrayLevelRunEmphasis.original", number = dim(counts.ok)[1])
+toptable.hglRem <- toptable.hglRem[order(toptable.hglRem$P.Value),]
+p.val.voom <- as.data.frame(fit$p.value)
+
+# P-value distribution of results computed by limma
+ggplot(data = p.val.voom, aes(x = HighGrayLevelRunEmphasis.original)) + 
+  geom_histogram(bins = 100)
+
+# QQplot plot for p-values computed by limma
+GWASTools::qqPlot(p.val.voom$HighGrayLevelRunEmphasis.original)
+
+summary(summa.fit.hglRem)
+head(toptable.hglRem, 10)
+```
+
+
+```{r load_results_larDepEm}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/LargeDependenceEmphasis.original.rda")
+
+summa.fit.larDepEm <- decideTests(fit)
+toptable.larDepEm <- topTable(fit, coef="LargeDependenceEmphasis.original", number = dim(counts.ok)[1])
+toptable.larDepEm <- toptable.larDepEm[order(toptable.larDepEm$P.Value),]
+p.val.voom <- as.data.frame(fit$p.value)
+
+# P-value distribution of results computed by limma
+ggplot(data = p.val.voom, aes(x = LargeDependenceEmphasis.original)) + 
+  geom_histogram(bins = 100)
+
+# QQplot plot for p-values computed by limma
+GWASTools::qqPlot(p.val.voom$LargeDependenceEmphasis.original)
+
+summary(summa.fit.larDepEm)
+head(toptable.larDepEm)
+```
+
+
+```{r load_results_larDepHigh}
+  load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/LargeDependenceHighGrayLevelEmphasis.original.rda")
+
+summa.fit.larDepHigh <- decideTests(fit)
+summary(summa.fit.larDepHigh)
+```
+
+
+```{r load_results_larDepLow}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/LargeDependenceLowGrayLevelEmphasis.original.rda")
+
+summa.fit.larDepLow <- decideTests(fit)
+toptable.larDepLow <- topTable(fit, coef="LargeDependenceLowGrayLevelEmphasis.original", number = dim(counts.ok)[1])
+toptable.larDepLow <- toptable.larDepLow[order(toptable.larDepLow$P.Value),]
+p.val.voom <- as.data.frame(fit$p.value)
+
+# P-value distribution of results computed by limma
+ggplot(data = p.val.voom, aes(x = LargeDependenceLowGrayLevelEmphasis.original)) + 
+  geom_histogram(bins = 100)
+
+# QQplot plot for p-values computed by limma
+GWASTools::qqPlot(p.val.voom$LargeDependenceLowGrayLevelEmphasis.original)
+
+summary(summa.fit.larDepLow)
+head(toptable.larDepLow, 10)
+```
+
+
+```{r load_results_smDepEm}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/SmallDependenceEmphasis.original.rda")
+
+summa.fit.smDepEm <- decideTests(fit)
+summary(summa.fit.smDepEm)
+```
+
+
+```{r load_results_smDepHigh}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/SmallDependenceHighGrayLevelEmphasis.original.rda")
+
+summa.fit.smDepHigh <- decideTests(fit)
+summary(summa.fit.smDepHigh)
+```
+
+
+```{r load_results_smDepLow}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/SmallDependenceLowGrayLevelEmphasis.original.rda")
+
+summa.fit.smDepLow <- decideTests(fit)
+summary(summa.fit.smDepLow)
+```
+
+
+```{r load_results_busy}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/Busyness.original.rda")
+
+summa.fit.busy <- decideTests(fit)
+toptable.busy <- topTable(fit, coef="Busyness.original", number = dim(counts.ok)[1])
+toptable.busy <- toptable.busy[order(toptable.busy$P.Value),]
+p.val.voom <- as.data.frame(fit$p.value)
+
+# P-value distribution of results computed by limma
+ggplot(data = p.val.voom, aes(x = Busyness.original)) + 
+  geom_histogram(bins = 100)
+
+# QQplot plot for p-values computed by limma
+GWASTools::qqPlot(p.val.voom$Busyness.original)
+
+summary(summa.fit.busy)
+head(toptable.busy, 10)
+```
+
+
+```{r load_results_coar}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/Coarseness.original.rda")
+
+summa.fit.coar <- decideTests(fit)
+toptable.coar <- topTable(fit, coef="Coarseness.original", number = dim(counts.ok)[1])
+toptable.coar <- toptable.coar[order(toptable.coar$P.Value),]
+p.val.voom <- as.data.frame(fit$p.value)
+
+# P-value distribution of results computed by limma
+ggplot(data = p.val.voom, aes(x = Coarseness.original)) + 
+  geom_histogram(bins = 100)
+
+# QQplot plot for p-values computed by limma
+GWASTools::qqPlot(p.val.voom$Coarseness.original)
+
+summary(summa.fit.coar)
+head(toptable.coar, 10)
+```
+
+
+```{r load_results_comp}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/Complexity.original.rda")
+
+summa.fit.comp <- decideTests(fit)
+toptable.comp <- topTable(fit, coef="Complexity.original", number = dim(counts.ok)[1])
+toptable.comp <- toptable.comp[order(toptable.comp$P.Value),]
+p.val.voom <- as.data.frame(fit$p.value)
+
+# P-value distribution of results computed by limma
+ggplot(data = p.val.voom, aes(x = Complexity.original)) + 
+  geom_histogram(bins = 100)
+
+# QQplot plot for p-values computed by limma
+GWASTools::qqPlot(p.val.voom$Complexity.original)
+
+summary(summa.fit.comp)
+head(toptable.comp, 10)
+```
+
+
+```{r load_results_strength}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/Strength.original.rda")
+
+summa.fit.strength <- decideTests(fit)
+toptable.strength <- topTable(fit, coef="Strength.original", number = dim(counts.ok)[1])
+toptable.strength <- toptable.strength[order(toptable.strength$P.Value),]
+p.val.voom <- as.data.frame(fit$p.value)
+
+# P-value distribution of results computed by limma
+ggplot(data = p.val.voom, aes(x = Strength.original)) + 
+  geom_histogram(bins = 100)
+
+# QQplot plot for p-values computed by limma
+GWASTools::qqPlot(p.val.voom$Strength.original)
+
+summary(summa.fit.strength)
+head(toptable.strength, 10)
+```
+
+
+```{r load_results_imc1}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/Imc1.original.rda")
+summa.fit.imc1 <- decideTests(fit)
+summary(summa.fit.imc1)
+```
+
+
+```{r load_results_imc2}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/Imc2.original.rda")
+summa.fit.imc2 <- decideTests(fit)
+summary(summa.fit.imc2)
+```
+
+
+```{r load_results_X10}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/X10Percentile.original.rda")
+summa.fit.X10 <- decideTests(fit)
+toptable.X10 <- topTable(fit, coef="X10Percentile.original", number = dim(counts.ok)[1])
+toptable.X10 <- toptable.X10[order(toptable.X10$P.Value),]
+p.val.voom <- as.data.frame(fit$p.value)
+
+# P-value distribution of results computed by limma
+ggplot(data = p.val.voom, aes(x = X10Percentile.original)) + 
+  geom_histogram(bins = 100)
+
+# QQplot plot for p-values computed by limma
+GWASTools::qqPlot(p.val.voom$X10Percentile.original)
+
+summary(summa.fit.X10)
+head(toptable.X10, 10)
+```
+
+
+```{r load_results_X90}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/X90Percentile.original.rda")
+summa.fit.X90 <- decideTests(fit)
+summary(summa.fit.X90)
+```
+
+
+```{r load_results_ent}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/Entropy.original.rda")
+summa.fit.ent <- decideTests(fit)
+summary(summa.fit.ent)
+```
+
+
+```{r load_results_engy}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/Energy.original.rda")
+summa.fit.engy <- decideTests(fit)
+summary(summa.fit.engy)
+```
+
+
+```{r load_results_intq}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/InterquartileRange.original.rda")
+
+summa.fit.intq <- decideTests(fit)
+toptable.intq <- topTable(fit, coef="InterquartileRange.original", number = dim(counts.ok)[1])
+toptable.intq <- toptable.intq[order(toptable.intq$P.Value),]
+p.val.voom <- as.data.frame(fit$p.value)
+
+# P-value distribution of results computed by limma
+ggplot(data = p.val.voom, aes(x = InterquartileRange.original)) + 
+  geom_histogram(bins = 100)
+
+# QQplot plot for p-values computed by limma
+GWASTools::qqPlot(p.val.voom$InterquartileRange.original)
+
+summary(summa.fit.intq)
+head(toptable.intq, 10)
+```
+
+
+```{r load_results_kur}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/Kurtosis.original.rda")
+summa.fit.kur <- decideTests(fit)
+summary(summa.fit.kur)
+```
+
+
+```{r load_results_max}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/Maximum.original.rda")
+summa.fit.max <- decideTests(fit)
+summary(summa.fit.max)
+```
+
+
+```{r load_results_meanAb}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/MeanAbsoluteDeviation.original.rda")
+summa.fit.meanAb <- decideTests(fit)
+summary(summa.fit.meanAb)
+```
+
+
+```{r load_results_mean}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/Mean.original.rda")
+summa.fit.mean <- decideTests(fit)
+summary(summa.fit.mean)
+```
+
+
+```{r load_results_med}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/Median.original.rda")
+summa.fit.med <- decideTests(fit)
+summary(summa.fit.med)
+```
+
+
+```{r load_results_min, eval=FALSE}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/Minimum.original.rda")
+summa.fit.min <- decideTests(fit)
+summary(summa.fit.min)
+```
+
+
+```{r load_results_range}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/Range.original.rda")
+summa.fit.range <- decideTests(fit)
+summary(summa.fit.range)
+```
+
+
+```{r load_results_robustM}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/RobustMeanAbsoluteDeviation.original.rda")
+
+summa.fit.robustM <- decideTests(fit)
+toptable.robustM <- topTable(fit, coef="RobustMeanAbsoluteDeviation.original", number = dim(counts.ok)[1])
+toptable.robustM <- toptable.robustM[order(toptable.robustM$P.Value),]
+p.val.voom <- as.data.frame(fit$p.value)
+
+# P-value distribution of results computed by limma
+ggplot(data = p.val.voom, aes(x = RobustMeanAbsoluteDeviation.original)) + 
+  geom_histogram(bins = 100)
+
+# QQplot plot for p-values computed by limma
+GWASTools::qqPlot(p.val.voom$RobustMeanAbsoluteDeviation.original)
+
+summary(summa.fit.robustM)
+head(toptable.robustM, 10)
+```
+
+
+```{r load_results_root}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/RootMeanSquared.original.rda")
+summa.fit.root <- decideTests(fit)
+summary(summa.fit.root)
+```
+
+
+```{r load_results_skw}
+load("/Users/carlacasanovasuarez/Desktop/Radiomic features models (indiv)/Skewness.original.rda")
+summa.fit.skw <- decideTests(fit)
+summary(summa.fit.skw)
+```
+
+
+## Features with positive DE  
+
+Load RadAR object in order to retrieve `rowdata` later:  
+
+```{r load_rdr}
+load("/Users/carlacasanovasuarez/Documents/Master Bioinformatics UAB/Prácticas Radiomics/Radiomic features/Results_rfeatures/radar_L1_Norm_scaled_adjusted_min_int_center_final.rda")
+
+rdr_L1_final
+```
+
+Load annotation data of genes stored in `annotation.sputum.ok` object to check which ones have annotations:  
+
+```{r load_anno}
+load("/Users/carlacasanovasuarez/Documents/Master Bioinformatics UAB/Prácticas Radiomics/Radiomic features/Results_rfeatures/R objects/sputum_eset_annotationOK.rda")
+```
+
+Create a vector with feature names of features positively associated with genes DE:  
+
+```{r positive_features}
+pos_rf <- c("Sphericity.original",
+               "Variance.original",
+               "Autocorrelation.original",
+               "ClusterShade.original",
+               "Contrast.original",
+               "DifferenceAverage.original",
+               "Id.original",
+               "Idm.original",
+               "Idmn.original",
+               "Idn.original",
+               "InverseVariance.original",
+               "JointAverage.original",
+               "SumAverage.original",
+               "HighGrayLevelEmphasis.original",
+               "LongRunLowGrayLevelEmphasis.original",
+               "LowGrayLevelRunEmphasis.original",
+               "RunPercentage.original",
+               "LargeAreaEmphasis.original",
+               "LowGrayLevelEmphasis.original",
+               "LargeAreaHighGrayLevelEmphasis.original",
+               "LargeAreaLowGrayLevelEmphasis.original",
+               "SmallAreaEmphasis.original",
+               "SmallAreaHighGrayLevelEmphasis.original",
+               "SmallAreaLowGrayLevelEmphasis.original",
+               "ZoneVariance.original",
+               "DependenceNonUniformity.original",
+               "HighGrayLevelRunEmphasis.original",
+               "LargeDependenceEmphasis.original",
+               "LargeDependenceLowGrayLevelEmphasis.original",
+               "Busyness.original",
+               "Coarseness.original",
+               "Complexity.original",
+               "Strength.original",
+               "X10Percentile.original",
+               "InterquartileRange.original")
+```
+
+
+Not all the features are equally robust. We're just interested in *first order*, *shape* and *glcm*:  
+
+```{r check_feature_type}
+# Create a data frame with feature types
+feature_names <- substr(pos_rf, 1, nchar(pos_rf)-9) 
+
+# Check row data of rdr object which as feature name and feature type
+ids <- rowData(rdr_L1_final)$feature_name %in% feature_names
+out <- cbind(feature_names,
+              feature.type = rowData(rdr_L1_final)[ids, ]$feature_type)
+out <- as.data.frame(out)
+
+out
+```
+
+
+### First order enrichment analysis  
+
+Check features are *first order*:  
+
+```{r fo_subset}
+first.order.DE <- out[out$feature.type == "first_order_statistics",]
+
+# In this case, the only features correlated are LowGrayLevelEmphasis and Autocorrelation
+first.order.DE
+```
+
+Store names of genes DE (p.adj < 0.01 if possible):  
+
+```{r fo_genes}
+# Create bools for genes with the most restrictive p.value 
+dd.fo.Auto <- toptable.autoc$adj.P.Val < 0.01 & !is.na(toptable.autoc$adj.P.Val)
+dd.fo.Variance <- toptable.variance$adj.P.Val < 0.04 & !is.na(toptable.variance$adj.P.Val)
+dd.fo.X10 <- toptable.X10$adj.P.Val < 0.01 & !is.na(toptable.X10$adj.P.Val)
+
+deGenes.fo <- c(rownames(toptable.variance[dd.fo.Variance, ]),rownames(toptable.X10[dd.fo.X10, ]), rownames(toptable.autoc[dd.fo.Auto, ]))
+
+deGenes.fo
+length(deGenes.fo)
+table(duplicated(deGenes.fo))
+```
+
+Check if there are annotations available:  
+
+```{r de_genes_ann_fo}
+# Check info 
+annotation.sputum.ok[deGenes.fo,]
+```
+
+Create gene universe:  
+
+```{r gene_universe_fo}
+geneUniverse.fo <- rownames(toptable.autoc[!is.na(toptable.autoc$P.Value), ]) 
+length(geneUniverse.fo)
+```
+
+Change annotation to `ENTREZ`:  
+
+```{r entrez_annotation_fo}
+# Retrieve ENTREZ names 
+deGenes.fo.entrez <- unlist(mget(deGenes.fo, envir=hgu133plus2ENTREZID, ifnotfound = NA))
+geneUniverse.fo.entrez <- unlist(mget(geneUniverse.fo, envir=hgu133plus2ENTREZID, ifnotfound = NA))
+```
+
+**GO** enrichment:  
+
+```{r GO_enrichment_fo}
+ans.go.fo <- enrichGO(gene = deGenes.fo.entrez, ont = "BP",
+                      universe = geneUniverse.fo.entrez,
+                      OrgDb ="org.Hs.eg.db", 
+                      readable=TRUE, pvalueCutoff = 0.05)
+
+# See results
+tab.go.fo <- as.data.frame(ans.go.fo@result) 
+#tab.go.fo<- subset(tab.go.fo, Count>5) 
+tab.go.fo[1:5, 1:6]
+```
+
+
+```{r kegg_fo}
+ans.kegg.fo <- enrichKEGG(gene = deGenes.fo.entrez,
+                          universe = geneUniverse.fo.entrez,
+                          organism = 'hsa',
+                          pvalueCutoff = 0.05) 
+
+# See results
+tab.kegg.fo <- as.data.frame(ans.kegg.fo@result)
+#tab.kegg.fo<- subset(tab.kegg.fo, Count>5) 
+tab.kegg.fo[1:5, 1:6]
+```
+
+**DisGeNet** analysis. Get API:  
+
+```{r disgenet_get_API}
+library(disgenet2r)
+
+# Get API
+disgenet_api_key <- get_disgenet_api_key(email = "carlacasanovasuarez@gmail.com", password = "mypassword1234", verbose = TRUE)
+
+Sys.setenv(DISGENET_API_KEY= disgenet_api_key)
+```
+
+
+```{r disgenet_enrichment_fo}
+res_enrich.fo <-disease_enrichment(entities = deGenes.fo.entrez, vocabulary = "ENTREZ", database = "CURATED")
+
+res.table.disgenet.fo <- res_enrich.fo@qresult
+res.table.disgenet.fo
+
+#save(res.table.disgenet.fo, file = "/Users/carlacasanovasuarez/Desktop/DisGenet_fo_features.rda")
+```
+
+**MSigDb** enrichment analysis (group C7 inmunologic signature):  
+
+```{r msigdb_fo}
+# Load terms for genes coded by ENTREZ of the gene set C7
+c3.tf <- read.gmt("/Users/carlacasanovasuarez/Downloads/c7.all.v7.5.1.entrez.gmt.txt")
+
+# Enrichment
+ans.tf.fo <- enricher(deGenes.fo.entrez, TERM2GENE=c3.tf) 
+tab.tf.fo <- as.data.frame(ans.tf.fo@result)
+#tab.tf.fo<- subset(tab.tf.fo, Count>5) 
+tab.tf.fo[1:5,1:5]
+```
+
+
+### Shape  
+
+```{r sh_subset}
+shape.DE <- out[out$feature.type == "first_order_shape",]
+
+# In this case, these features are not correlated
+shape.DE
+```
+
+Store names of genes DE (p.adj < 0.01 if possible):  
+
+```{r shape_genes}
+# Create bools for genes with the most restrictive p.value 
+dd.shape.s <- toptable.sphericity$adj.P.Val < 0.01 & !is.na(toptable.sphericity$adj.P.Val)
+dd.shape.intq <- toptable.intq$adj.P.Val < 0.02 & !is.na(toptable.intq$adj.P.Val)
+
+deGenes.shape <- c(rownames(toptable.sphericity[dd.shape.s, ]),rownames(toptable.intq[dd.shape.intq, ]))
+
+deGenes.shape
+length(deGenes.shape)
+table(duplicated(deGenes.shape))
+```
+
+Check if there are annotations available:  
+
+```{r de_genes_ann}
+# Check info 
+annotation.sputum.ok[deGenes.shape,]
+```
+
+Gene universe shape:  
+
+```{r gene_universe_sh}
+geneUniverse.sh <- rownames(toptable.sphericity[!is.na(toptable.sphericity$P.Value), ]) 
+length(geneUniverse.sh)
+```
+
+Change annotation to `ENTREZ`:  
+
+```{r entrez_annotation_shape}
+# Retrieve ENTREZ names 
+deGenes.sh.entrez <- unlist(mget(deGenes.shape, envir=hgu133plus2ENTREZID, ifnotfound = NA))
+geneUniverse.sh.entrez <- unlist(mget(geneUniverse.sh, envir=hgu133plus2ENTREZID, ifnotfound = NA))
+```
+
+**GO** enrichment:  
+
+```{r GO_enrichment_shape}
+ans.go.sh <- enrichGO(gene = deGenes.sh.entrez, ont = "BP",
+                      universe = geneUniverse.sh.entrez,
+                      OrgDb ="org.Hs.eg.db", 
+                      readable=TRUE, pvalueCutoff = 0.05)
+
+# See results
+tab.go.sh <- as.data.frame(ans.go.sh@result) 
+#tab.go.sh<- subset(tab.go.sh, Count>5) 
+tab.go.sh[1:5, 1:6]
+```
+
+**KEGG** enrichment:  
+
+```{r kegg_sh}
+ans.kegg.sh <- enrichKEGG(gene = deGenes.sh.entrez, 
+                       organism = 'hsa',
+                       universe = geneUniverse.sh.entrez,
+                       pvalueCutoff = 0.05) 
+
+# See results
+tab.kegg.sh <- as.data.frame(ans.kegg.sh@result)
+#tab.kegg.sh <- subset(tab.kegg.sh, Count>5) 
+tab.kegg.sh[1:5, 1:6]
+```
+
+Disgenet:  
+
+```{r disgenet_enrichment_sh}
+res_enrich.sh <-disease_enrichment(entities = deGenes.sh.entrez, vocabulary = "ENTREZ", database = "CURATED")
+
+res.table.disgenet.sh <- res_enrich.sh@qresult
+res.table.disgenet.sh
+
+#save(res.table.disgenet.sh, file = "/Users/carlacasanovasuarez/Desktop/DisGenet_shape_features.rda")
+```
+
+**MSigDb** enrichment analysis (group C7 inmunologic signature):  
+
+```{r msigdb_sh}
+# Load terms for genes coded by ENTREZ of the gene set C7
+c3.tf <- read.gmt("/Users/carlacasanovasuarez/Downloads/c7.all.v7.5.1.entrez.gmt.txt")
+
+# Enrichment
+ans.tf.sh <- enricher(deGenes.sh.entrez, TERM2GENE=c3.tf) 
+tab.tf.sh <- as.data.frame(ans.tf.sh@result)
+#tab.tf.sh <- subset(tab.tf.sh, Count>5) 
+tab.tf.sh[1:5,1:5]
+```
+
+
+## glcm  
+
+```{r glcm_subset}
+glcm.DE <- out[out$feature.type == "grey_level_co-occurrence_matrix",]
+
+# In this case, these features tighly correlated: id, idm, idmn, idn. Fueatures correlated with first order are also found, such as JointAverage and SumAverage (they are also correlated between them)
+glcm.DE
+```
+
+Store names of genes DE (p.adj < 0.01 if possible):  
+
+```{r glcm_genes}
+# Create bools for genes with the most restrictive p.value 
+dd.glcm.clusS <- toptable.sphericity$adj.P.Val < 0.01 & !is.na(toptable.sphericity$adj.P.Val)
+dd.glcm.sum <- toptable.sumAv$adj.P.Val < 0.01 & !is.na(toptable.sumAv$adj.P.Val) 
+dd.glcm.id <- toptable.idO$adj.P.Val < 0.05 & !is.na(toptable.idO$adj.P.Val)
+dd.glcm.idm <- toptable.idmO$adj.P.Val < 0.05 & !is.na(toptable.idmO$adj.P.Val)
+dd.glcm.hglEm <- toptable.hglEm$adj.P.Val < 0.01 & !is.na(toptable.hglEm$adj.P.Val)
+
+deGenes.glcm <- c(rownames(toptable.idmO[dd.glcm.idm, ]),rownames(toptable.idO[dd.glcm.id, ]), rownames(toptable.clustSh[dd.glcm.clusS, ]), rownames(toptable.sumAv[dd.glcm.sum,]), rownames(toptable.hglEm[dd.glcm.hglEm, ])) 
+
+deGenes.glcm
+length(deGenes.glcm)
+table(duplicated(deGenes.glcm))
+deGenes.glcm <- unique(deGenes.glcm)
+```
+
+Check if there are annotations available:  
+
+```{r de_glcm_ann}
+# Check info 
+annotation.sputum.ok[deGenes.glcm,]
+```
+
+Gene universe shape:  
+
+```{r gene_universe_glcm}
+geneUniverse.glcm <- rownames(toptable.sumAv[!is.na(toptable.sumAv$P.Value), ]) 
+length(geneUniverse.glcm)
+```
+
+Change annotation to `ENTREZ`:  
+
+```{r entrez_annotation_glcm}
+# Retrieve ENTREZ names 
+deGenes.glcm.entrez <- unlist(mget(deGenes.glcm, envir=hgu133plus2ENTREZID, ifnotfound = NA))
+geneUniverse.glcm.entrez <- unlist(mget(geneUniverse.glcm, envir=hgu133plus2ENTREZID, ifnotfound = NA))
+```
+
+**GO** enrichment:  
+
+```{r GO_enrichment_glcm}
+ans.go.glcm <- enrichGO(gene = deGenes.glcm.entrez, ont = "BP",
+                        universe = geneUniverse.glcm.entrez,
+                        OrgDb ="org.Hs.eg.db", 
+                        readable=TRUE, pvalueCutoff = 0.05)
+
+# See results
+tab.go.glcm <- as.data.frame(ans.go.glcm@result) 
+#tab.go.glcm<- subset(tab.go.glcm, Count>5) 
+tab.go.glcm[1:5, 1:6]
+```
+
+**KEGG** enrichment:  
+
+```{r kegg_glcm}
+ans.kegg.glcm <- enrichKEGG(gene = deGenes.glcm.entrez, 
+                            universe = geneUniverse.glcm.entrez,
+                            organism = 'hsa',
+                            pvalueCutoff = 0.05) 
+
+# See results
+tab.kegg.glcm <- as.data.frame(ans.kegg.glcm@result)
+#tab.kegg.glcm <- subset(tab.kegg.glcm, Count>5) 
+tab.kegg.glcm[1:5, 1:6]
+```
+
+Disgenet:  
+
+```{r disgenet_enrichment_glcm}
+res_enrich.glcm <-disease_enrichment(entities = deGenes.glcm.entrez, vocabulary = "ENTREZ", database = "CURATED")
+
+res.table.disgenet.glcm <- res_enrich.glcm@qresult
+res.table.disgenet.glcm
+
+#save(res.table.disgenet.glcm, file = "/Users/carlacasanovasuarez/Desktop/DisGenet_glcm_features.rda")
+#write.csv(res.table.disgenet.glcm, "./Disgenet_enrichment_glcm.csv")
+```
+
+**MSigDb** enrichment analysis (group C7 inmunologic signature):  
+
+```{r msigdb_glcm}
+# Load terms for genes coded by ENTREZ of the gene set C7
+c3.tf <- read.gmt("/Users/carlacasanovasuarez/Downloads/c7.all.v7.5.1.entrez.gmt.txt")
+
+# Enrichment
+ans.tf.glcm <- enricher(deGenes.glcm.entrez, TERM2GENE=c3.tf) 
+tab.tf.glcm <- as.data.frame(ans.tf.glcm@result)
+#tab.tf.glcm <- subset(tab.tf.glcm, Count>5) 
+tab.tf.glcm[1:5,1:5]
+```
+
+
+## Summary  
+
+First order:  
+
+```{r fo_plots}
+# GO
+dotplot(ans.go.fo, showCategory=20) + ggtitle("GO First order") 
+
+# KEGG
+x2 <- pairwise_termsim(ans.kegg.fo) 
+emapplot(x2)
+
+# Disgenet plot() function only displays diseases from ratios > 0.4. 
+plot(res_enrich.fo, class = "Enrichment",  cutoff= 0.05) 
+```
+
+
+Shape:  
+
+```{r sh_plots}
+# GO
+dotplot(ans.go.sh, showCategory=20) + ggtitle("GO Shape features") 
+
+# KEGG
+# WARNING <- p.value not significant
+#x3 <- pairwise_termsim(ans.kegg.sh) 
+#emapplot(x3)
+```
+
+
+Glcm:  
+
+```{r glcm_plots, eval=FALSE}
+# GO
+# WARNING <- p.value not significant
+#dotplot(ans.go.glcm, showCategory=20) + ggtitle("GO GLCM features") 
+
+# KEGG
+# WARNING <- p.value not significant
+#x4 <- pairwise_termsim(ans.kegg.glcm) 
+#emapplot(x4)
+```
+

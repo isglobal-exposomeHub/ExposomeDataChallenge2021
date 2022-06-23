@@ -1,0 +1,1154 @@
+---
+title: "RNA-seq sputum sample"
+author: "Carla Casanova"
+date: "6/6/2022"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning=FALSE, message=FALSE,cache = TRUE)
+knitr::opts_chunk$set(tidy.opts = list(width.cutoff = 80), tidy = TRUE)
+```
+
+```{r libraries}
+library(dplyr)
+# Fir filterbyExpression function
+library(edgeR)
+# plotRLE
+library(EDASeq)
+library(tidyverse)
+library(SummarizedExperiment)
+library(ggplot2)
+library(RColorBrewer)
+# For aheatmap function
+library(NMF)
+# For automatic selection of variables to adjust the model
+library(leaps)
+library(sva)
+library(EnhancedVolcano)
+library(factoextra)
+library(FactoMineR)
+library(clusterProfiler)
+```
+
+## Loading data  
+
+```{r load_rdr}
+#load("/Users/carlacasanovasuarez/Documents/Prácticas Radiomics/Radiomic features/Results_rfeatures/radar_L1_Norm_adjusted_min_PCA_final.rda")
+
+load("/Users/carlacasanovasuarez/Documents/Master Bioinformatics UAB/Prácticas Radiomics/Radiomic features/Results_rfeatures/radar_L1_Norm_scaled_adjusted_min_int_center_final.rda")
+
+rdr_L1_final
+```
+
+```{r load_eset}
+load("/Users/carlacasanovasuarez/Documents/Master Bioinformatics UAB/Prácticas Radiomics/Transcriptomics/eset_sputum.rda")
+
+sputum_eset
+```
+
+## Checking patients having both: transcriptomic and image data  
+First of all, remember that patients of `rdr` object are represented with `SUBJID` while the `Expression set` object has `D_SUBJID`. Now, let's check which patients with image data have also transcriptomic data:  
+
+```{r patients_genes}
+# Change patient ID in rdr object
+colnames(rdr_L1_final) <- colData(rdr_L1_final)$D_SUBJID
+
+# Are all the patients having proper ID conversion? Check for NaN
+table(is.na(colnames(rdr_L1_final)))
+
+# Save patients names for each object
+patients_eset <- colnames(sputum_eset)
+patients_rdr <- colnames(rdr_L1_final)
+
+# See patients with both: radiomic features and transcriptomic data. The result are the D_SUBJID for common patients
+# Put IDs as character, otherwise it will take IDs as number of row when filtering
+common_transcrip <- as.character(intersect(patients_rdr, patients_eset))
+```
+
+So, let's filter and check both objects to have the same patients:  
+
+```{r filtering_objects}
+# Filter patients that are common in both objects
+rdr_L1_filt <- rdr_L1_final[,common_transcrip]
+sputum_eset_filt <- sputum_eset[,common_transcrip]
+
+# Check that you have the same amount of patients in both
+dim(rdr_L1_filt)
+dim(sputum_eset_filt)
+
+# Check that patients are the same and equally ordered
+identical(colnames(rdr_L1_filt), colnames(sputum_eset_filt))
+```
+
+
+## Storing data  
+Store `colData` and `assay` from `rdr` object:  
+
+```{r coldata}
+# Store clinical data for patients with radiomic features
+rdr_colData <- as.data.frame(colData(rdr_L1_filt)) %>%
+  relocate(D_SUBJID, .after = SUBJID)
+
+# Store adjusted and scaled radiomic features 
+rdr_assay <- assay(rdr_L1_filt, 2)
+
+# Check if radiomic features are the adjusted ones
+plot(t(rdr_assay)[,"Mean.original"], t(rdr_assay)[,"Variance.original"])
+```
+
+Check that radiomic features are correctly scaled (mean = 0 and sd = 1): 
+
+```{r check_scale_mean}
+# Mean
+rowMeans(rdr_assay)
+```
+
+```{r check_scale_sd}
+# Sd
+rowSds(rdr_assay)
+```
+
+Storing **phenotype**, **expression** and **annotation** data from `Expression set` object:  
+
+```{r get_data_eset}
+# Transcriptomic data
+counts <- exprs(sputum_eset_filt)
+
+# Phenotipic data
+# Retrieves the subjects’ phenotypes in an AnnotatedDataFrame object 
+pheno_blood <- phenoData(sputum_eset_filt)
+# pData() converts the phenotipic data to a data frame 
+phenoDataFrame <- pData(sputum_eset_filt)
+
+# Annotation data
+annotation.sputum <- fData(sputum_eset_filt)
+```
+
+## Exploring variables  
+
+```{r group_variable_frequency}
+# Check groups in expression set
+table(phenoDataFrame$GROUP)
+table(is.na(phenoDataFrame$GROUP))
+
+table(phenoDataFrame$GOLDCD)
+table(is.na(phenoDataFrame$GOLDCD))
+
+# Check groups in rdr object
+table(rdr_colData$GOLDCD)
+table(is.na(rdr_colData$GOLDCD))
+```
+
+Dictionary for GOLD classification:  
+
+* 0=GOLD 0: Control (FEV1 > 80% FEV1/FVC > 0.7)
+* 1=GOLD 1: (FEV1 > 80% FEV1/FVC < 0.7)
+* 2=GOLD 2: (50% < FEV1 < 80% FEV1/FVC < 0.7)
+* 3=GOLD 3: (30% < FEV1 < 50% FEV1/FVC < 0.7)
+* 4=GOLD 4: (FEV1 < 30% FEV1/FVC < 0.7)  
+
+Let's transform three stages into a binary variable (moderate, severe):  
+
+```{r GOLD_stages_classification}
+# Group by tumor stages
+stage <- phenoDataFrame$GOLDCD
+ids.moderate <- grep(paste(2, sep="|"), stage)
+
+ids.severe <- grep(paste(3, 4, sep="|"), stage)
+
+phenoDataFrame$GROUP_bin <- rep(NA, ncol(sputum_eset_filt))
+phenoDataFrame$GROUP_bin[ids.moderate] <- "Moderate"
+phenoDataFrame$GROUP_bin[ids.severe] <- "Severe"
+phenoDataFrame$GROUP_bin <- as.factor(phenoDataFrame$GROUP_bin)
+```
+
+## Exploring gene counts  
+First, analyze **library sizes** between samples:  
+
+```{r counts_data}
+# Check that the sum of each column is not equal to 10^6 since values have RPKM normalization
+colSums(counts, na.rm=TRUE)
+```
+
+```{r library_size}
+# Number of reads in that sample (library size)
+lib.size <- colSums(counts, na.rm = TRUE)
+
+barplot(lib.size, names = colnames(counts))
+mtext(side = 1, text = "Samples", line = 4)
+mtext(side = 2, text = "Library size (millions)", line = 3)
+title("Barplot of library sizes")
+```
+
+### Gene selection  
+Now, let's select genes for the analysis using `filterByExpr` from `edgeR` package (based on minimum library size) and 
+
+```{r select_genes}
+# Remove data with NA values
+counts.ok <- counts[complete.cases(counts),]
+dim(counts.ok)
+
+# Create groups
+group <- phenoDataFrame$GOLDCD
+group <- factor(group)
+
+# Are there negative counts?
+table(apply(counts.ok, 1, function(x){any(x < 0)}))
+# If yes, then filter those genes
+counts.ok <- counts.ok[!apply(counts.ok, 1, function(x){any(x < 0)}),]
+
+# Use edgeR package to create a DGEList object with gene matrix to filter genes
+y = DGEList(counts=counts.ok, group = group)
+
+# Check rows of clinical data and DGEList object before adding more variables
+identical(rownames(y$samples), rownames(phenoDataFrame))
+identical(rownames(y), rownames(counts.ok))
+y$samples$Stage <- phenoDataFrame$GROUP_bin
+y$samples$Cough <- phenoDataFrame$COUGH
+y$samples$Sex <- phenoDataFrame$SEX
+
+# Filter genes 
+keep <- filterByExpr(y)
+table(keep)
+
+y <- y[keep, ,keep.lib.sizes=FALSE]
+counts.ok <- counts.ok[rownames(y),]
+  
+dim(counts.ok)
+```
+
+In this case, all the 40 genes were removed for the analysis.  
+
+```{r filter_annot}
+# Filter data frame with features information by removing genes that are not desired for the current analysis
+identical(rownames(counts.ok), rownames(annotation.sputum))
+filter_rows <- intersect(rownames(counts.ok), rownames(annotation.sputum))
+annotation.sputum.ok <- annotation.sputum[filter_rows,]
+identical(rownames(counts.ok), annotation.sputum.ok$PROBEID)
+
+rownames(annotation.sputum.ok) <- annotation.sputum.ok$PROBEID
+```
+
+Save objects for future analyses using only sputum samples:  
+
+```{r patients_sputum_rdr, eval=FALSE}
+save(rdr_assay, file = "/Users/carlacasanovasuarez/Documents/Master Bioinformatics UAB/Prácticas Radiomics/Radiomic features/Results_rfeatures/R objects/rdr_assay_scaled.rda")
+```
+
+```{r patients_sputum_eset, eval=FALSE}
+save(sputum_eset_filt, file = "/Users/carlacasanovasuarez/Documents/Master Bioinformatics UAB/Prácticas Radiomics/Radiomic features/Results_rfeatures/R objects/sputum_eset.rda")
+
+save(counts.ok, file = "/Users/carlacasanovasuarez/Documents/Master Bioinformatics UAB/Prácticas Radiomics/Radiomic features/Results_rfeatures/R objects/sputum_eset_countsOK.rda")
+
+save(phenoDataFrame, file = "/Users/carlacasanovasuarez/Documents/Master Bioinformatics UAB/Prácticas Radiomics/Radiomic features/Results_rfeatures/R objects/sputum_eset_phenoOK.rda")
+
+save(annotation.sputum.ok, file = "/Users/carlacasanovasuarez/Documents/Master Bioinformatics UAB/Prácticas Radiomics/Radiomic features/Results_rfeatures/R objects/sputum_eset_annotationOK.rda")
+```
+
+From the boxplots we see that overall the density distributions of raw log-intensities are not identical but still not very different. If a sample is really far above or below the blue horizontal line we may need to investigate that sample further.  
+
+```{r log_trans}
+# logsignal values
+counts.log <- log10(counts.ok) 
+
+boxplot(counts.log, xlab="", ylab="Log10 counts per million",las=2)
+abline(h=median(counts.log, na.rm = TRUE),col="blue")
+title("Boxplots of logRPKMs (unnormalised)")
+```
+
+### Check normalization  
+First of all, should the following should be considered. TMM normalizes the library sizes to produce **effective library sizes**. **CPM** values are counts normalized by the effective library sizes. **RPKM** values are counts normalized by effective library sizes and by gene/feature length [(Biostars)](https://www.biostars.org/p/9475236/). Hence, RPKM has been computed using by using **normalization factors** that correct the library size-scaled values for the compositional component. This here is what the **Trimmed Mean of M-values (TMM)** does. So, in practce steps when using `edgeR` include:  
+
+```
+#/ make the DGEList:
+y <- DGEList(...)  
+
+#/ calculate TMM normalization factors:
+y <- calcNormFactors(y)
+
+#/ get the normalized counts:
+cpms <- cpm(y, log=FALSE)
+```  
+
+Let's check **RPKM** counts with a MA plot in order to see if data has been properly normalized:  
+
+```{r MA_plot}
+maPlot(counts.ok[,1], counts.ok[,2], pch=19, cex=.5, ylim=c(-8,8), 
+       allCol="darkgray", lowess=TRUE, 
+       xlab=expression( A == log[2] (sqrt(Sample1 %.% Sample3)) ), 
+       ylab=expression(M == log[2](Sample1/Sample3))) 
+grid(col="black")
+title("RPKM data")
+```
+
+
+```{r RLE_pot}
+color = ifelse(phenoDataFrame$GROUP_bin=="Moderate", "black", "brown3")
+
+plotRLE(counts.ok, outline=FALSE, 
+        ylim=c(-2, 2), col = color,
+        main = 'Normalized Counts (RPKM)')
+```
+
+
+```{r RLE_pot_log}
+color = ifelse(phenoDataFrame$GROUP_bin=="Moderate", "black", "brown3")
+
+plotRLE(counts.log, outline=FALSE, 
+        ylim=c(-0.3, 0.3), col = color,
+        main = 'Log-transformed Counts (RPKM)')
+```
+
+
+```{r shapiro}
+# Test normality of RPKM values
+shap.RPKM <- shapiro.test(counts.ok[1,])
+
+# Test normality of log values
+shap.log <- shapiro.test(counts.log[1,])
+
+# Check results
+shap.log
+shap.RPKM
+```
+
+### Multidimensional analysis of gene expression with PCA  
+
+```{r PCA_analysis}
+# Compute the variance of each gene across samples
+V <- apply(counts.ok, 1, var)
+#sort the results by variance in decreasing order
+#and select the top 500 genes
+selectedGenes <- names(V[order(V, decreasing = TRUE)][1:500])
+
+# Perform PCA
+#pcaResults1 <- prcomp(t(counts.log[selectedGenes,]),scale = TRUE)
+pcaResults2 <- prcomp(t(counts.ok[selectedGenes,]),scale = TRUE)
+```
+
+See explained varibility for each principal component:  
+
+```{r summary_PCA}
+summary(pcaResults2)
+```
+
+PCA for patients:  
+
+```{r PCA_patientient_genes_plot}
+qplot(pcaResults2$x[,1], pcaResults2$x[,2], xlab = "PC1", ylab = "PC2", main = "Scaled PCA of patients", colour = phenoDataFrame$GROUP_bin) + 
+  labs(colour = "Group")
+```
+
+PCA for genes:  
+
+```{r PCA_genes_plot}
+qplot(pcaResults2$rotation[,1], pcaResults2$rotation[,2], xlab = "PC1", ylab = "PC2", main = "Scaled PCA of genes")
+```
+
+```{r plot_MDS}
+color.gr <- ifelse(phenoDataFrame$GROUP_bin=="Moderate", "blue", "coral")
+color.cough <- ifelse(phenoDataFrame$COUGH=="Chronic cough", "red", "green")
+color.sex <- ifelse(phenoDataFrame$SEX=="F", "orange", "purple")
+
+plotMDS(y, col= color.gr)
+legend("topleft",fill=c("blue","coral"),legend=levels(phenoDataFrame$GROUP_bin))
+title("Stage")
+
+plotMDS(y, col= color.cough)
+legend("bottomleft",fill=c("red","green"),legend=levels(as.factor(phenoDataFrame$COUGH)))
+title("Cough")
+
+plotMDS(y, col= color.sex)
+legend("topleft",fill=c("orange","purple"),legend=levels(as.factor(phenoDataFrame$SEX)))
+title("Sex")
+```
+
+As can be seen in the previous analysis, in this case patients are slightly stratified by COPD stage. Nevertheless, `Moderate` and `Severe` seem to be close stages since patients are almost mixed.
+
+Nevertheless, this does not mean that counts are not properly normalized. The **mean-difference plots** show average expression (mean: x-axis) against log-fold-changes (difference: y-axis). Imagine that counts have been normalized just **by library size, but not for composition bias**. Which is translated to the fact that TMM normalization factors have been not computed. Counts would be displayed asymmetrically over or undo the horizontal line (one side bigger than the another).
+
+Because our `DGEList` object contains the normalisation factors (if computed with TMM), if we redo these plots using `y` object, we should see the composition bias problem has been solved. See in the following example as data is similarly distributed across the horizontal line:  
+
+```{r check_MD_patients}
+# Look column index for patients of interest
+grep("44469", colnames(counts.ok))
+grep("94832", colnames(counts.ok))
+
+par(mfrow=c(1,2))
+plotMD(y,column = 105)
+abline(h=0,col="grey")
+plotMD(y,column = 80)
+abline(h=0,col="grey")
+```
+
+In this case, if we use `log-transformed` counts, scale would be smaller and data will be seen more compacted:  
+
+```{r check_MD_patients_log}
+# Look column index for patients of interest
+grep("44469", colnames(counts.log))
+grep("94832", colnames(counts.log))
+
+par(mfrow=c(1,2))
+plotMD(counts.log,column = 105)
+abline(h=0,col="grey")
+plotMD(counts.log,column = 80)
+abline(h=0,col="grey")
+```
+
+### Multidimensional analysis Hierarchical Clustering  
+
+```{r HCL}
+# You can use those function either to watch or get info of the palette
+#display.brewer.all()
+#brewer.pal.info
+
+# Select a palette
+mypalette <- brewer.pal(11,"PiYG")
+# Extend colors
+morecols <- colorRampPalette(mypalette)
+
+# Select more variable genes (previously computed for PCA analysis)
+highly_variable_lcpm <- counts.log[selectedGenes,]
+```
+
+```{r plot_heatmap}
+#pdf("heatmap_sputum.pdf")
+
+# Plot heatmap
+aheatmap(highly_variable_lcpm,col=rev(morecols(50)),main="Top 500 most variable genes across samples",annCol=phenoDataFrame[,c("GROUP_bin", "SEX")],labCol=phenoDataFrame[,"GROUP_bin"], scale="row")
+
+#dev.off()
+```
+
+### PCA for radiomic features of 125 patients  
+
+Compute pca for radiomic features object with 125 patients:  
+
+```{r pca_all_transcriptomics_rf}
+# Prepare data
+rdr_pca_filt <- rdr_assay
+
+# Change labels to visualize better
+rownames(rdr_pca_filt) <- substr(rownames(rdr_pca_filt), start = 1, stop =  nchar(rownames(rdr_pca_filt))-9)
+
+# Store 15 first dimensions
+res.pca <- PCA(t(rdr_pca_filt), ncp = 15, graph = FALSE)
+```
+
+Top variables contribution:  
+
+```{r var}
+#pdf("Contribution variables PCA patients.pdf")
+
+# Graph of variables: default plot
+fviz_pca_var(res.pca, col.var="contrib",
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+             select.var = list(contrib = 5),
+             repel = TRUE) # Avoid text overlapping
+
+#dev.off()
+```
+
+See which features are contributing the most per dimension:  
+
+```{r contrib_var}
+#pdf("Contribution variables PC1-3.pdf")
+
+# Contributions of variables to PC1
+fviz_contrib(res.pca, choice = "var", axes = 1, top = 10)
+# Contributions of variables to PC2
+fviz_contrib(res.pca, choice = "var", axes = 2, top = 10)
+# Contributions of variables to PC3
+fviz_contrib(res.pca, choice = "var", axes = 3, top = 10)
+
+#dev.off()
+```
+
+See individuals that are contributing the most to the analysis:  
+
+```{r individuals_graph}
+#pdf("Contribution individuals PCA.pdf")
+
+# Graph of individuals
+# 1. Use repel = TRUE to avoid overplotting
+# 2. Control automatically the color of individuals using the cos2
+    # cos2 = the quality of the individuals on the factor map
+    # Use points only
+# 3. Use gradient color
+fviz_pca_ind(res.pca, col.ind = "cos2",
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+             repel = TRUE # Avoid text overlapping (slow if many points)
+             )
+
+#dev.off()
+```
+
+### Selection of variables  
+
+Prepare a data frame with possible covariates and PCs:  
+
+```{r selection_variables}
+#residual_volume = phenoDataFrame$RV,
+#SVC = phenoDataFrame$SVC,
+#TLC = phenoDataFrame$TLC,
+#FRC = phenoDataFrame$FRC,
+#Low_percentile = phenoDataFrame$LOW15PCT,
+#                                 PC2_rdr = rdr_colData$PC2,
+#                                 PC3_rdr = rdr_colData$PC3,
+#                                 PC4_rdr = rdr_colData$PC4,
+#                                 PC5_rdr = rdr_colData$PC5,
+#                                 PC6_rdr = rdr_colData$PC6,
+#                                 PC7_rdr = rdr_colData$PC7,
+#                                 PC8_rdr = rdr_colData$PC8,
+#                                 PC9_rdr = rdr_colData$PC9,
+#                                 PC10_rdr = rdr_colData$PC10,
+
+
+# Store values for for individuals from PCA analysis of radiomic features
+pca_ind <- get_pca_ind(res.pca)
+pca_values <- pca_ind$coord
+
+# Create a data frame with clinical variables to asses and PCs
+variables_interest <- data.frame(Sex = as.factor(phenoDataFrame$SEX), 
+                                 Age = phenoDataFrame$AGE, 
+                                 Dwalk = phenoDataFrame$DWALK,
+                                 BMI = phenoDataFrame$BMI,
+                                 Smoke_history = phenoDataFrame$SUSMHS,
+                                 Years_smoke = phenoDataFrame$SUSMYR,
+                                 Cough = as.factor(phenoDataFrame$COUGH),
+                                 ex_first_year = phenoDataFrame$Y1EXBS,
+                                 Group = as.factor(phenoDataFrame$GROUP_bin),
+                                 N_cigarrete_day = phenoDataFrame$SUCGSMDY,
+                                 Cr_bronchitis = as.factor(phenoDataFrame$CBRONCH),
+                                 Cr_wheezeng = as.factor(phenoDataFrame$ATS3EG),
+                                 history_asthma = as.factor(phenoDataFrame$ATS5G),
+                                 fume_expose = as.factor(phenoDataFrame$ATS6C),
+                                 dusty_expose = as.factor(phenoDataFrame$ATS6B),
+                                 phlegm = as.factor(phenoDataFrame$PHLEGM),
+                                 heart_failure = as.factor(phenoDataFrame$ATS8F),
+                                 stroke = as.factor(phenoDataFrame$ATS8E),
+                                 diabetes = as.factor(phenoDataFrame$ATS8L),
+                                 osteoporosis = as.factor(phenoDataFrame$ATS8H),
+                                 FEVVCPD = phenoDataFrame$FEVVCPD,
+                                 FEV1PSPC = phenoDataFrame$FEV1PSPC,
+                                 TLC = phenoDataFrame$TLC,
+                                 FRC = phenoDataFrame$FRC,
+                                 Low_percentile = phenoDataFrame$LOW15PCT,
+                                 PC1_rdr = pca_values[,1],
+                                 PC2_rdr = pca_values[,2],
+                                 PC3_rdr = pca_values[,3],
+                                 PC4_rdr = pca_values[,4],
+                                 PC5_rdr = pca_values[,5],
+                                 PC6_rdr = pca_values[,6],
+                                 PC7_rdr = pca_values[,7],
+                                 PC8_rdr = pca_values[,8],
+                                 PC9_rdr = pca_values[,9],
+                                 PC10_rdr = pca_values[,10],
+                                 PC11_rdr = pca_values[,11],
+                                 PC12_rdr = pca_values[,12],
+                                 PC13_rdr = pca_values[,13],
+                                 PC14_rdr = pca_values[,14],
+                                 PC15_rdr = pca_values[,15],
+                                 row.names = rownames(phenoDataFrame))
+
+# Code for removing columns with some NA
+variables_interest <- variables_interest[ , apply(variables_interest, 2, function(x) !any(is.na(x)))]
+
+# count unique values for each variable
+sapply(lapply(variables_interest, unique), length)
+#display unique values for each variable
+lapply(variables_interest[c("Smoke_history", 'Sex', 'Cough')], unique)
+# Remove variables with just one factor
+variables_interest[,"Smoke_history"] <- NULL
+
+# Select counts higher than 10
+countData <- counts.ok[rowSums(counts.ok) > 10, ]
+```
+
+Perform automatic selection by using **forward stepwise regression**. Each gene counts represents a model, therefore is necessary to check which variables are present in models with the best adjustment (highest R-squares):    
+
+```{r stepwise_counts_automatic}
+# Perform automatic stepwise regression: forward
+mod.fow <- stats::step(lm(t(countData) ~ ., data = variables_interest), trace = FALSE, direction = "forward")
+
+# Store coefficients of the model in a long list (each gene is a model since we're looking counts)
+models.results <- summary(mod.fow)
+
+# Check and store genes with the highest R-squared values (better adjust)
+models.r.sq <- sapply(models.results, function(x) {x$r.squared > 0.6})
+table(models.r.sq)
+genes.mfit.high <- models.results[models.r.sq]
+
+# Retrieve significant p.values (< 0.05) for each variable from summary of lm to most adjusted genes and check which variables are significant
+models.p.values <- sapply(genes.mfit.high, function(x) {x$coefficients[,4] < 0.05})
+head(models.p.values)
+
+# Check how many variables have at least one significant p.value 
+variables.sig <- apply(models.p.values, 1, function(x) {any(x == TRUE)})
+table(variables.sig)
+
+not.sig.variables <- rownames(models.p.values[!variables.sig,])
+not.sig.variables
+```
+
+See variables that better explain differences between stages automatically (optional):  
+
+```{r group_variable}
+plot(regsubsets(Group ~ ., data = variables_interest, method = "exhaustive", nbest = 1))
+```
+
+Functions for assessing linear models:  
+
+```{r asses_model_functions}
+# RSS se ajusta mejor si es más bajo
+rss <- function(fitted, actual){ 
+  sum((fitted - actual)^2)
+}
+
+# RMSE se ajusta mejor si es más bajo
+rmse <- function(fitted, actual){ 
+  sqrt(mean((fitted - actual)^2))
+}
+```
+
+Let's start exploring manually variables:  
+
+```{r manual_var_select}
+mod.s <- lm(t(countData) ~ Sex, data = variables_interest)
+mod.sa <- lm(t(countData) ~ Sex + Age, data = variables_interest)
+mod.a <- lm(t(countData) ~ Age, data = variables_interest)
+mod.g <- lm(t(countData) ~ Group, data = variables_interest)
+mod.sag <- lm(t(countData) ~ Group + Sex + Age, data = variables_interest)
+mod.dwalk <- lm(t(countData) ~ Dwalk, data = variables_interest)
+mod.dsag <- lm(t(countData) ~ Group + Sex + Age + Dwalk, data = variables_interest)
+mod.dag <- lm(t(countData) ~ Group + Age + Dwalk, data = variables_interest)
+mod.dsagf <- lm(t(countData) ~ Group + Sex + Age + Dwalk + FEV1PSPC, data = variables_interest)
+mod.dsagffd <- lm(t(countData) ~ Group + Sex + Age + Dwalk + FEV1PSPC + fume_expose + dusty_expose, data = variables_interest)
+mod.dsagffda <- lm(t(countData) ~ Group + Sex + Age + Dwalk + FEV1PSPC + fume_expose + dusty_expose + history_asthma, data = variables_interest)
+mod.pc1n2 <-  lm(t(countData) ~ PC1_rdr + PC2_rdr, data = variables_interest)
+mod.dsagffdapc1n2 <- lm(t(countData) ~ Group + Sex + Age + Dwalk + FEV1PSPC + fume_expose + dusty_expose + history_asthma + PC1_rdr + PC2_rdr, data = variables_interest)
+# Without Cough
+mod.dsagffdapc1n2 <- lm(t(countData) ~ Group + Sex + Age + Dwalk + FEV1PSPC + fume_expose + dusty_expose + history_asthma + PC1_rdr + PC2_rdr, data = variables_interest)
+# Without Dwalk and FEV1PSPC but Cough
+mod.sagfdacpc1n2 <- lm(t(countData) ~ Group + Sex + Age + fume_expose + dusty_expose + history_asthma + Cough + PC1_rdr + PC2_rdr, data = variables_interest)
+# ALL + 1 and 2 PC
+mod.dsagffdacpc1n2 <- lm(t(countData) ~ Group + Sex + Age + Dwalk + FEV1PSPC + fume_expose + dusty_expose + history_asthma + Cough + PC1_rdr + PC2_rdr, data = variables_interest)
+# All + PCs
+mod.dsagffdacpc1.8 <- lm(t(countData) ~ Group + Sex + Age + Dwalk + FEV1PSPC + fume_expose + dusty_expose + history_asthma + Cough + PC1_rdr + PC2_rdr+ PC3_rdr + PC4_rdr+ PC5_rdr + PC6_rdr + PC7_rdr + PC8_rdr, data = variables_interest)
+# All + PCs + BMI +  Cr_wheezeng 
+mod.dsagffdacBWpc1.8 <- lm(t(countData) ~ Group + Sex + Age + Dwalk + FEV1PSPC + fume_expose + dusty_expose + history_asthma + Cough + BMI + Cr_wheezeng + PC1_rdr + PC2_rdr + PC3_rdr + PC4_rdr+ PC5_rdr + PC6_rdr + PC7_rdr + PC8_rdr, data = variables_interest)
+
+rmse(fitted(mod.s), t(countData))
+rmse(fitted(mod.sa), t(countData))
+rmse(fitted(mod.a), t(countData))
+rmse(fitted(mod.g), t(countData))
+rmse(fitted(mod.sag), t(countData))
+rmse(fitted(mod.dwalk), t(countData))
+rmse(fitted(mod.dsag), t(countData))
+rmse(fitted(mod.dag), t(countData))
+rmse(fitted(mod.dsagf), t(countData))
+rmse(fitted(mod.dsagffd), t(countData))
+rmse(fitted(mod.dsagffda), t(countData))
+rmse(fitted(mod.pc1n2), t(countData))
+rmse(fitted(mod.dsagffdapc1n2), t(countData))
+rmse(fitted(mod.sagfdacpc1n2), t(countData))
+rmse(fitted(mod.dsagffdacpc1n2), t(countData))
+rmse(fitted(mod.dsagffdacpc1.8), t(countData))
+# Best model
+rmse(fitted(mod.dsagffdacBWpc1.8), t(countData))
+```
+
+  
+
+```{r relationships, echo=FALSE, eval=FALSE}
+plot(rdr_colData$PC1,counts.ok["240160_x_at",])
+plot(phenoDataFrame$AGE,counts.ok["240160_x_at",])
+```
+
+```{r relationships_2,echo=FALSE, eval=FALSE}
+plot(rdr_colData$PC1,counts.ok["220610_s_at",])
+plot(phenoDataFrame$AGE,counts.ok["220610_s_at",])
+```
+
+### Surrogate variable analysis  
+
+In this case, variables that want to be tested lately have to be protected from `sva` analysis in order to preserve the variability related with this known covariates. The null-model `mod0` can have all the desired variables of the model, but the one to **contrast** lately:  
+
+```{r sva_avalysis}
+# Create a model with tumor stage as covariate and a null model
+mod1 <- model.matrix( ~ Group + Sex + Age + Dwalk + FEV1PSPC + fume_expose + dusty_expose + history_asthma + Cough + BMI + Cr_wheezeng + PC1_rdr + PC2_rdr + PC3_rdr + PC4_rdr + PC5_rdr + PC6_rdr + PC7_rdr + PC8_rdr + PC9_rdr + PC10_rdr + PC11_rdr + PC12_rdr + PC13_rdr + PC14_rdr + PC15_rdr, data=variables_interest)
+mod0 <- model.matrix( ~ Group + Sex + Age + Dwalk + FEV1PSPC + fume_expose + dusty_expose + history_asthma + Cough + BMI + Cr_wheezeng, data=variables_interest)
+
+# This estimates the required number of surrogate variables
+#countData <- counts.ok[rowSums(counts.ok) > 10, ]
+res <- svaseq(countData, mod1, mod0)
+
+# Number of estimated surrogate variables 
+res$n.sv
+
+# Check surrogated variables 
+head(res$sv)
+
+# Add SVs to column data information
+variables_interest_sva <- DataFrame(variables_interest, res$sv)
+```
+
+### Differential expression analysis  
+
+First we need to create a **design matrix** for the groups (see the excellent limma user guide for more information on design matrices). There are many different ways to set up your design matrix, and **it is dictated by what comparisons you would like to test**.  
+
+*Voom* will automatically adjust the library sizes using the `norm.factors` if calculated. We can add `plot=TRUE` to generate a plot of the **mean-variance trend**. This plot can also tell us if there are any genes that look really variable in our data, and if we’ve filtered the low counts adequately.  
+
+```{r voom_normalize}
+# Normalize data with voom and add tumor stage as covariate in design 
+design <- model.matrix( ~ Group + Sex + Age + Dwalk + FEV1PSPC + fume_expose + dusty_expose + history_asthma + Cough + BMI + Cr_wheezeng + PC1_rdr + PC2_rdr + PC3_rdr + PC4_rdr + PC5_rdr + PC6_rdr + PC7_rdr + PC8_rdr + PC9_rdr + PC10_rdr + PC11_rdr + PC12_rdr + PC13_rdr + PC14_rdr + PC15_rdr + V1 + V2 + V3 + V4 + V5 + V6 + V7 + V8 + V9 + V10 + V11 + V12 + V13 + V14 + V15 + V16 + V17, data=variables_interest_sva)
+v <- voom(counts.ok, design=design, plot=TRUE)
+```
+
+We can repeat the box plots for the normalised data to compare to before normalisation. The expression values in `v$E` are already **log2 values** so we don’t need to log-transform.  
+
+```{r voom_log_boxplot}
+par(mfrow=c(1,2))
+boxplot(counts.ok, xlab="", ylab="RPKM counts per million",las=2,main="RPKM")
+## Let's add a blue horizontal line that corresponds to the median logCPM
+abline(h=median(counts.ok),col="blue")
+
+boxplot(v$E, xlab="", ylab="Log2 counts per million",las=2,main="Voom transformed logRPKM")
+## Let's add a blue horizontal line that corresponds to the median logCPM
+abline(h=median(v$E),col="blue")
+```
+
+`lmFit` estimates group means according to the design matrix, as well as gene-wise variances.  
+
+```{r voom_lm}
+fit <- lmFit(v, design)
+fit <- eBayes(fit)
+```
+
+Check variables which are significantly correlated with genes DE:  
+
+```{r fit_sumary}
+summa.fit <- decideTests(fit)
+summary(summa.fit)
+```
+
+```{r pvalue_dist_Voom}
+# Get p-values computed by limma
+p.val.voom <- as.data.frame(fit$p.value)
+
+# P-value distribution of results computed by limma
+ggplot(data = p.val.voom, aes(x = PC2_rdr)) +
+geom_histogram(bins = 100)
+
+# P-value distribution of results computed by limma
+ggplot(data = p.val.voom, aes(x = PC4_rdr)) +
+geom_histogram(bins = 100)
+
+# P-value distribution of results computed by limma
+ggplot(data = p.val.voom, aes(x = PC8_rdr)) +
+geom_histogram(bins = 100)
+
+# P-value distribution of results computed by limma
+ggplot(data = p.val.voom, aes(x = PC9_rdr)) +
+geom_histogram(bins = 100)
+```
+
+```{r pvalue_QQplot_Voom}
+# QQplot plot for p-values computed by limma
+GWASTools::qqPlot(p.val.voom$PC2_rdr)
+
+# QQplot plot for p-values computed by limma
+GWASTools::qqPlot(p.val.voom$PC4_rdr)
+
+# QQplot plot for p-values computed by limma
+GWASTools::qqPlot(p.val.voom$PC8_rdr)
+
+# QQplot plot for p-values computed by limma
+GWASTools::qqPlot(p.val.voom$PC9_rdr)
+```
+
+### Studying differential expression of one effect  
+
+#### Group  
+Since we are interested in differences between groups, we need to specify which comparisons we want to test. The comparison of interest can be specified using the `makeContrasts` function. 
+
+```{r contrast_g}
+# You can check the index of your coefficient 
+grep("GroupSevere", colnames(fit$coefficients))
+
+groupSevere <- topTable(fit, number = 20000, coef=2)
+groupSevere <- groupSevere[order(groupSevere$P.Value),]
+head(groupSevere)
+```
+
+```{r volcano_g, fig.align='center', fig.height=8}
+EnhancedVolcano(groupSevere, lab = rownames(groupSevere), 
+                x = 'logFC',
+                y = 'P.Value', ylim=c(0,50),
+                pCutoff = 10e-5,
+                FCcutoff = 0.5,
+                pointSize = 3.0,
+                labSize = 6.0)
+```
+
+#### PC2_rdr  
+
+```{r contrast_rf_pc2}
+groupPC2 <- topTable(fit, number = dim(counts.ok)[1], coef="PC2_rdr")
+groupPC2 <- groupPC2[order(groupPC2$P.Value),]
+head(groupPC2)
+```
+
+```{r volcano_rf_pc2, fig.align='center', fig.height=8}
+EnhancedVolcano(groupPC2, lab = rownames(groupPC2), 
+                x = 'logFC',
+                y = 'P.Value', ylim=c(0,20),
+                pCutoff = 10e-5,
+                FCcutoff = 0.05,
+                pointSize = 3.0,
+                labSize = 6.0)
+```
+
+#### PC4_rdr  
+
+```{r contrast_rf_PC4}
+groupPC4 <- topTable(fit, number = dim(counts.ok)[1], coef="PC4_rdr")
+groupPC4 <- groupPC4[order(groupPC4$P.Value),]
+head(groupPC4)
+```
+
+```{r volcano_rf_pc4, fig.align='center', fig.height=8}
+EnhancedVolcano(groupPC4, lab = rownames(groupPC4), 
+                x = 'logFC',
+                y = 'P.Value', ylim=c(0,10),
+                pCutoff = 10e-5,
+                FCcutoff = 0.05,
+                pointSize = 3.0,
+                labSize = 6.0)
+```
+
+## Enrichment  
+
+Store gene names of the data set with genes DE:  
+
+```{r differentially_expressed_pc4}
+# Store genes with p.adjusted lesser than 0.01 (highly significant)
+mask <- groupPC4$adj.P.Val < 0.01 & !is.na(groupPC4$adj.P.Val)
+deGenes <- rownames(groupPC4[mask, ]) 
+
+# Check differentially expressed genes
+head(deGenes)
+length(deGenes)
+```
+
+Do we have information about these genes?
+
+```{r anno_check_pc4}
+annotation.sputum.ok[deGenes,]
+```
+
+Trying another one:  
+
+```{r differentially_expressed_pc2}
+# Store genes with p.adjusted lesser than 0.01 (highly significant)
+mask <- groupPC2$adj.P.Val < 0.04 & !is.na(groupPC2$adj.P.Val)
+deGenes <- rownames(groupPC2[mask, ]) 
+
+# Check differentially expressed genes
+head(deGenes)
+length(deGenes)
+
+# Check info 
+annotation.sputum.ok[deGenes,]
+```
+
+Store gene names of all the data set:  
+
+```{r gene_universe}
+geneUniverse <- rownames(groupPC2[!is.na(groupPC2$P.Value), ]) 
+length(geneUniverse)
+```
+
+Retrieve `Entrez ID` from the annotations of genes:  
+
+```{r entrez_annotation}
+library(annotate)
+library(hgu133plus2.db)
+
+# Change row names of annotation data
+rownames(annotation.sputum.ok) <- annotation.sputum.ok$PROBEID
+
+# Retrieve ENTREZ names 
+deGenes.entrez <- unlist(mget(deGenes, envir=hgu133plus2ENTREZID, ifnotfound = NA))
+geneUniverse.entrez <- unlist(mget(geneUniverse, envir=hgu133plus2ENTREZID, ifnotfound = NA))
+```
+
+**GO** enrichment analysis:  
+
+```{r GO_enrichment, eval=FALSE}
+library(org.Hs.eg.db)
+
+ans.go <- enrichGO(gene = deGenes.entrez, ont = "MF",
+                   OrgDb ="org.Hs.eg.db", 
+                   readable=TRUE, pvalueCutoff = 0.05)
+
+# See results
+tab.go <- as.data.frame(ans.go) 
+tab.go<- subset(tab.go, Count>5) 
+tab.go[1:5, 1:6]
+```
+
+**KEGG** enrichment analysis:  
+
+```{r kegg, eval=FALSE}
+ans.kegg <- enrichKEGG(gene = deGenes.entrez, 
+                       organism = 'hsa',
+                       pvalueCutoff = 0.05) 
+
+# See results
+tab.kegg <- as.data.frame(ans.kegg)
+tab.kegg<- subset(tab.kegg, Count>5) 
+tab.kegg[1:5, 1:6]
+```
+
+Code to install `disgenet2r`:  
+
+```{r install_disgenet2r, eval=FALSE}
+library(devtools)
+install_url("https://cran.r-project.org/src/contrib/Archive/SPARQL/SPARQL_1.16.tar.gz")
+install_bitbucket("ibi_group/disgenet2r")
+```
+
+
+**DisGeNet** analysis. Get API:    
+
+```{r disgenet_get_API}
+library(disgenet2r)
+
+# Get API
+disgenet_api_key <- get_disgenet_api_key(email = "carlacasanovasuarez@gmail.com", password = "mypassword1234", verbose = TRUE)
+
+Sys.setenv(DISGENET_API_KEY= disgenet_api_key)
+```
+
+Start enrichment:  
+
+```{r gene2disease}
+# Retrieve gene 2 disease
+gq <- gene2disease(gene = deGenes.entrez, 
+                   vocabulary = "ENTREZ",
+                   database = "CURATED", 
+                   score = c( 0.1,1))
+gq@qresult
+```
+
+
+```{r disgenet_enrichment}
+res_enrich <-disease_enrichment(entities = deGenes.entrez, vocabulary = "ENTREZ", database = "CURATED")
+
+res.table.disgenet <- res_enrich@qresult
+head(res.table.disgenet)
+```
+
+**MSigDb** enrichment analysis (group C7 inmunologic signature):  
+
+```{r msigdb}
+# Load terms for genes coded by ENTREZ of the gene set C7
+c3.tf <- read.gmt("/Users/carlacasanovasuarez/Downloads/c7.all.v7.5.1.entrez.gmt.txt")
+
+# Enrichment
+ans.tf <- enricher(deGenes.entrez, TERM2GENE=c3.tf) 
+tab.tf <- as.data.frame(ans.tf@result)
+#tab.tf<- subset(tab.tf, Count>5) 
+tab.tf[1:5,1:5]
+```
+
+## DE using cluster  
+
+```{r clust}
+hclustCarlos <- read.delim("/Users/carlacasanovasuarez/Downloads/consensus_class_k20.csv", sep = ",")
+```
+
+```{r create_clust}
+# Change radiomic features' names to be equal than rdr object
+hclustCarlos.s <- hclustCarlos[,1:2]
+hclustCarlos.s[22,1] <- "10Percentile.original"
+hclustCarlos.s[23,1] <- "90Percentile.original"
+
+# Create a table where clusters are columns and radiomic features belonging to that cluster in rows
+df.wide <- pivot_wider(hclustCarlos.s, names_from = x, values_from = X)
+
+# Select clusters with more than 2 radiomic features
+clust.interest <- apply(df.wide, 2, function(x) {length(unlist(x)) > 2})
+df.wide.ok <- df.wide[,clust.interest]
+
+# Create a list with significative clusters and an empty data frame
+clusters.rf <- colnames(df.wide.ok)
+dd <- data.frame(patients = colnames(rdr_assay),
+                 stringsAsFactors = FALSE)
+
+# Iterate over the data frame with cluster information for computing the mean of all the radiomic features belonging to each cluster. Radiomic features must be scaled (to allow comparisions)
+for (i in 1:length(clusters.rf)){
+  dd[,i+1] <- cbind(apply(rdr_assay[unlist(df.wide.ok[,i]),],2,mean))
+}
+
+# Change row and col names
+rownames(dd) <- dd$patients
+dd$patients <- NULL
+colnames(dd) <- clusters.rf
+
+# Check if patients from the resulted data frame are ordered as pheno data
+identical(rownames(dd), rownames(phenoDataFrame))
+head(dd)
+```
+
+```{r variables_clust}
+variables_interest <- data.frame(Sex = as.factor(phenoDataFrame$SEX), 
+                                 Age = phenoDataFrame$AGE, 
+                                 Dwalk = phenoDataFrame$DWALK,
+                                 BMI = phenoDataFrame$BMI,
+                                 Smoke_history = phenoDataFrame$SUSMHS,
+                                 Years_smoke = phenoDataFrame$SUSMYR,
+                                 Cough = as.factor(phenoDataFrame$COUGH),
+                                 ex_first_year = phenoDataFrame$Y1EXBS,
+                                 Group = as.factor(phenoDataFrame$GROUP_bin),
+                                 N_cigarrete_day = phenoDataFrame$SUCGSMDY,
+                                 Cr_bronchitis = as.factor(phenoDataFrame$CBRONCH),
+                                 Cr_wheezeng = as.factor(phenoDataFrame$ATS3EG),
+                                 history_asthma = as.factor(phenoDataFrame$ATS5G),
+                                 fume_expose = as.factor(phenoDataFrame$ATS6C),
+                                 dusty_expose = as.factor(phenoDataFrame$ATS6B),
+                                 phlegm = as.factor(phenoDataFrame$PHLEGM),
+                                 heart_failure = as.factor(phenoDataFrame$ATS8F),
+                                 stroke = as.factor(phenoDataFrame$ATS8E),
+                                 diabetes = as.factor(phenoDataFrame$ATS8L),
+                                 osteoporosis = as.factor(phenoDataFrame$ATS8H),
+                                 FEVVCPD = phenoDataFrame$FEVVCPD,
+                                 FEV1PSPC = phenoDataFrame$FEV1PSPC,
+                                 TLC = phenoDataFrame$TLC,
+                                 FRC = phenoDataFrame$FRC,
+                                 Low_percentile = phenoDataFrame$LOW15PCT,
+                                 clust1 = dd$`1`,
+                                 clust3 = dd$`3`,
+                                 clust5 = dd$`5`,
+                                 clust6 = dd$`6`,
+                                 clust7 = dd$`7`,
+                                 clust8 = dd$`8`,
+                                 clust10 = dd$`10`,
+                                 clust11 = dd$`11`,
+                                 clust12 = dd$`12`,
+                                 row.names = rownames(phenoDataFrame))
+
+# Code for removing columns with some NA
+variables_interest <- variables_interest[ , apply(variables_interest, 2, function(x) !any(is.na(x)))]
+
+## Select counts
+countData <- counts.ok[rowSums(counts.ok) > 10, ]
+
+# count unique values for each variable
+sapply(lapply(variables_interest, unique), length)
+
+# Remove variables with just one factor
+variables_interest[,"Smoke_history"] <- NULL
+```
+
+Functions for assessing linear models:  
+
+```{r asses_model_functions_clust}
+# RSS se ajusta mejor si es más bajo
+rss <- function(fitted, actual){ 
+  sum((fitted - actual)^2)
+}
+
+# RMSE se ajusta mejor si es más bajo
+rmse <- function(fitted, actual){ 
+  sqrt(mean((fitted - actual)^2))
+}
+```
+
+Let's start exploring manually variables:  
+
+```{r manual_var_select_clust}
+mod.s <- lm(t(countData) ~ Sex, data = variables_interest)
+mod.sa <- lm(t(countData) ~ Sex + Age, data = variables_interest)
+mod.a <- lm(t(countData) ~ Age, data = variables_interest)
+mod.g <- lm(t(countData) ~ Group, data = variables_interest)
+mod.sag <- lm(t(countData) ~ Group + Sex + Age, data = variables_interest)
+mod.dwalk <- lm(t(countData) ~ Dwalk, data = variables_interest)
+mod.dsag <- lm(t(countData) ~ Group + Sex + Age + Dwalk, data = variables_interest)
+mod.dag <- lm(t(countData) ~ Group + Age + Dwalk, data = variables_interest)
+mod.dsagf <- lm(t(countData) ~ Group + Sex + Age + Dwalk + FEV1PSPC, data = variables_interest)
+mod.dsagffd <- lm(t(countData) ~ Group + Sex + Age + Dwalk + FEV1PSPC + fume_expose + dusty_expose, data = variables_interest)
+mod.dsagffda <- lm(t(countData) ~ Group + Sex + Age + Dwalk + FEV1PSPC + fume_expose + dusty_expose + history_asthma, data = variables_interest)
+# Trying just radiomic features 
+mod.clust <-  lm(t(countData) ~ clust1 + clust3 + clust5 + clust6 + clust7 + clust8 + clust10 + clust11 + clust12, data = variables_interest)
+# Adding the rest + radiomic features: without Cough
+mod.dsagffdaclust <- lm(t(countData) ~ Group + Sex + Age + Dwalk + FEV1PSPC + fume_expose + dusty_expose + history_asthma + clust1 + clust3 + clust5 + clust6 + clust7 + clust8 + clust10 + clust11 + clust12, data = variables_interest)
+# Without Dwalk and FEV1PSPC but Cough
+mod.sagfdacclust <- lm(t(countData) ~ Group + Sex + Age + fume_expose + dusty_expose + history_asthma + Cough + clust1 + clust3 + clust5 + clust6 + clust7 + clust8 + clust10 + clust11 + clust12, data = variables_interest)
+# ALL previous + clusters
+mod.dsagffdacclust <- lm(t(countData) ~ Group + Sex + Age + Dwalk + FEV1PSPC + fume_expose + dusty_expose + history_asthma + Cough + clust1 + clust3 + clust5 + clust6 + clust7 + clust8 + clust10 + clust11 + clust12, data = variables_interest)
+# All + PCs + BMI +  Cr_wheezeng 
+mod.dsagffdacBWclust <- lm(t(countData) ~ Group + Sex + Age + Dwalk + FEV1PSPC + fume_expose + dusty_expose + history_asthma + Cough + BMI + Cr_wheezeng + clust1 + clust3 + clust5 + clust6 + clust7 + clust8 + clust10 + clust11 + clust12, data = variables_interest)
+
+rmse(fitted(mod.s), t(countData))
+rmse(fitted(mod.sa), t(countData))
+rmse(fitted(mod.a), t(countData))
+rmse(fitted(mod.g), t(countData))
+rmse(fitted(mod.sag), t(countData))
+rmse(fitted(mod.dwalk), t(countData))
+rmse(fitted(mod.dsag), t(countData))
+rmse(fitted(mod.dag), t(countData))
+rmse(fitted(mod.dsagf), t(countData))
+rmse(fitted(mod.dsagffd), t(countData))
+rmse(fitted(mod.dsagffda), t(countData))
+rmse(fitted(mod.clust), t(countData))
+rmse(fitted(mod.dsagffdaclust), t(countData))
+rmse(fitted(mod.sagfdacclust), t(countData))
+rmse(fitted(mod.dsagffdacclust), t(countData))
+# Best model
+rmse(fitted(mod.dsagffdacBWclust), t(countData))
+```
+
+Perform SVA analysis:  
+
+```{r sva_avalysis_clust}
+#Group + Sex + Age + Dwalk + FEV1PSPC + fume_expose + dusty_expose + history_asthma +
+
+# Create a model with tumor stage as covariate and a null model
+mod1 <- model.matrix( ~ Group + Sex + Age + Dwalk + FEV1PSPC + fume_expose + dusty_expose + history_asthma + Cough + BMI + Cr_wheezeng + clust1 + clust3 + clust5 + clust6 + clust7 + clust8 + clust10 + clust11 + clust12, data=variables_interest)
+mod0 <- model.matrix( ~ Group + Sex + Age + Dwalk + FEV1PSPC + fume_expose + dusty_expose + history_asthma + Cough + BMI + Cr_wheezeng, data=variables_interest)
+
+# This estimates the required number of surrogate variables
+#countData <- counts.ok[rowSums(counts.ok) > 10, ]
+res <- svaseq(countData, mod1, mod0)
+
+# Number of estimated surrogate variables 
+res$n.sv
+
+# Check surrogated variables 
+head(res$sv)
+
+# Add SVs to column data information
+variables_interest_sva <- DataFrame(variables_interest, res$sv)
+```
+
+Perform DE analysis with voom:  
+
+```{r voom_normalize_clust}
+# Normalize data with voom and add tumor stage as covariate in design 
+design <- model.matrix( ~ Group + Sex + Age + Dwalk + FEV1PSPC + fume_expose + dusty_expose + history_asthma + Cough + BMI +  Cr_wheezeng + clust1 + clust3 + clust5 + clust6 + clust7 + clust8 + clust10 + clust11 + clust12 + V1 + V2 + V3 + V4 + V5 + V6 + V7 + V8 + V9 + V10 + V11 + V12 + V13 + V14 + V15 + V16 + V17 + V18, data=variables_interest_sva)
+v <- voom(countData, design=design, plot=TRUE)
+```
+
+```{r voom_lm_clust}
+fit <- lmFit(v, design)
+fit <- eBayes(fit)
+```
+
+```{r fit_sumary_clust}
+summa.fit <- decideTests(fit)
+summary(summa.fit)
+```
+

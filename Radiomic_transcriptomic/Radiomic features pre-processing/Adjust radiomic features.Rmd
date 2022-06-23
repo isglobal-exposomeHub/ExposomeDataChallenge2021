@@ -1,0 +1,340 @@
+---
+title: "Adjust data: assesing linear models"
+author: "Carla Casanova"
+output: pdf_document
+date: '2022-06-21'
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning=FALSE, message=FALSE)
+knitr::opts_chunk$set(tidy.opts = list(width.cutoff = 80), tidy = TRUE)
+```
+
+```{r library}
+library(datawizard)
+library(RadAR)
+library(dplyr)
+library(ggplot2)
+library(ggrepel)
+```
+
+## Load data  
+Load `RadAR` object with radiomic features:  
+
+```{r load_rdr}
+load("/Users/carlacasanovasuarez/Documents/Master Bioinformatics UAB/Prácticas Radiomics/Radiomic features/Results_rfeatures/results/radar_object_Norm_L1.rda")
+
+rdr_L1
+```  
+
+Filter by image type, only radiomic features from original images will be used:  
+
+```{r filtering_image_type}
+## filter by image types
+rdr_filt_original <- filter_by_image_type(rdr = rdr_L1, image_type = c("original"))
+ 
+rdr_filt_original
+```
+
+Store radiomic features and standardize data to allow comparisons between different features:  
+
+```{r table_rf}
+# Store radiomic features for original image type (101 features)
+table_original <- assay(rdr_filt_original)
+
+# Transpose before scaling in order to scale by features (otherwise scale by patients)
+table_scaled <- t(scale(t(table_original))) 
+```
+
+## Prepare variables and radiomic table    
+
+Store original colnames and rownames:  
+
+```{r col_names}
+# Store col and row names from the original table
+features_original <- rownames(table_scaled)
+patients_original <- colnames(table_scaled) 
+```
+
+Prepare radiomic tables to use `adjust()` function. Variables to be adjusted must be placed as columns and col names starting with integers must be avoided:  
+
+```{r prepare_colnames_to_work}
+table_scaled.T <- as.data.frame(t(table_scaled))
+
+# Change invalid column names (white spaces, integers, etc)
+names(table_scaled.T)[names(table_scaled.T) == '10Percentile.original'] <- 'tenPercentile.original'
+names(table_scaled.T)[names(table_scaled.T) == '90Percentile.original'] <- 'ninetyPercentile.original'
+```
+
+Prepare variables of interest in a data frame:  
+
+```{r linear_regression}
+dd.variables <- table_scaled.T %>%
+  mutate(Center = as.factor(colData(rdr_filt_original)$CENTREID),
+         Age = colData(rdr_filt_original)$AGE,
+         Smoker = as.factor(colData(rdr_filt_original)$SMOKER),
+         Cough = as.factor(colData(rdr_filt_original)$COUGH),
+         Country = as.factor(colData(rdr_filt_original)$COUNTRY),
+         Sex = as.factor(colData(rdr_filt_original)$SEX.t1),
+         GOLDCD = as.factor(colData(rdr_filt_original)$GOLDCD))
+```
+
+Now, remove variables with `NaN` values since prediction won't be comparable with original data (complete patients):  
+
+```{r remove_Nas}
+dd.variables = dd.variables[complete.cases(dd.variables), ]
+
+dim(dd.variables)
+```
+
+## Check for outliers in variables of interest  
+
+```{r outlier_function}
+# Plotting boxplot
+is_outlier <- function(x) {
+  return(x < quantile(x, 0.25) - 1.5 * IQR(x) | x > quantile(x, 0.75) + 1.5 * IQR(x))
+}
+```
+
+Check if there are outliers and their patient ID for `minimum`:  
+
+```{r outlier_min}
+table_scaled.T %>%
+  mutate(outlier = ifelse(is_outlier(Minimum.original), rownames(table_scaled.T), as.numeric(NA))) %>%
+  ggplot(., aes(y = Minimum.original)) +
+  ylab("Pixel vaues") +
+  ggtitle("Minimum values normalized") +
+    geom_boxplot() +
+    geom_text(aes(x=factor(0), label = outlier), na.rm = TRUE, hjust = +0.7) 
+```
+
+```{r outlier_max}
+table_scaled.T %>%
+  mutate(outlier = ifelse(is_outlier(Maximum.original), rownames(table_scaled.T), as.numeric(NA))) %>%
+  ggplot(., aes(y = Maximum.original)) +
+    geom_boxplot() +
+    geom_label_repel(aes(x=factor(0), label = outlier), na.rm = TRUE, max.overlaps = 30) 
+```
+
+## Adjust  
+
+Adjust by `minimum pixel value`:  
+
+```{r adjust_function_min}
+# Adjust all data for the original image type
+# You can adjust just some columns with: select = c("Mean.original", "Variance.original")
+clinical_features_min_vox_adj <- adjust(dd.variables, effect = "Minimum.original", keep_intercept = TRUE, exclude = c("Age", "Sex", "Smoker", "Cough", "Country", "GOLDCD"))
+
+qplot(clinical_features_min_vox_adj[,"Mean.original"], clinical_features_min_vox_adj[,"Variance.original"], colour = dd.variables$GOLDCD, xlab = "Mean", ylab = "Variance", main= "Adjusted by minimum") + 
+   labs(colour = 'GOLDCD')
+```
+
+Adjust by `maximum pixel value`:  
+
+```{r adjust_function_max}
+# Adjust all data for the original image type
+# You can adjust just some columns with: select = c("Mean.original", "Variance.original")
+clinical_features_max_vox_adj <- adjust(dd.variables, effect = "Maximum.original", keep_intercept = TRUE, exclude = c("Age", "Sex", "Smoker", "Cough", "Country", "GOLDCD"))
+
+qplot(clinical_features_max_vox_adj[,"Mean.original"], clinical_features_max_vox_adj[,"Variance.original"], colour = dd.variables$GOLDCD, xlab = "Mean", ylab = "Variance", main= "Adjusted by maximum") + 
+   labs(colour = 'GOLDCD')
+```
+
+Adjust by `Center`:  
+
+```{r adjust_function_center}
+# Adjust all data for the variable image type
+# You can adjust just some columns with: select = c("Mean.original", "Variance.original")
+clinical_features_center_adj <- adjust(dd.variables, effect = "Center", keep_intercept = TRUE, exclude = c("Age", "Sex", "Smoker", "Cough", "Country", "GOLDCD"))
+
+qplot(clinical_features_center_adj[,"Mean.original"], clinical_features_center_adj[,"Variance.original"], colour = dd.variables$GOLDCD, xlab = "Mean", ylab = "Variance", main= "Adjusted by center") + 
+   labs(colour = 'GOLDCD')
+```
+
+Adjust by `Center` and `minimum`:  
+
+```{r adjust_function_center_min}
+# Adjust all data for the variable image type
+# You can adjust just some columns with: select = c("Mean.original", "Variance.original")
+clinical_features_center_min_adj <- adjust(dd.variables, effect = c("Center", "Minimum.original"), keep_intercept = TRUE, exclude = c("Age", "Sex", "Smoker", "Cough", "Country"))
+
+qplot(clinical_features_center_min_adj[,"Mean.original"], clinical_features_center_min_adj[,"Variance.original"], colour = dd.variables$GOLDCD, xlab = "Mean", ylab = "Variance", main= "Adjusted by center and minimum") + 
+   labs(colour = 'GOLDCD')
+```
+
+Adjust by `Center` and `minimum` plus some other covariates (age, sex, etc):  
+
+```{r adjust_function_multivariate}
+# Adjust all data for the variable image type
+# You can adjust just some columns with: select = c("Mean.original", "Variance.original")
+clinical_features_multi_adj <- adjust(dd.variables, effect = c("Center", "Minimum.original", "Sex", "Country", "Cough"), keep_intercept = TRUE, exclude = c("Age", "Sex", "Smoker", "Cough", "Country"))
+
+qplot(clinical_features_multi_adj[,"Mean.original"], clinical_features_multi_adj[,"Variance.original"], colour = dd.variables$GOLDCD, xlab = "Mean", ylab = "Variance", main= "Adjusted by center, minimum, age, sex, country and cough") + 
+   labs(colour = 'GOLDCD')
+```
+
+
+## Asses best adjustment  
+
+Prepare functions to asses linear models: `RSS` and `RMSE`.  
+
+```{r asses_model_functions}
+# RSS se ajusta mejor si es más bajo
+rss <- function(fitted, actual){ 
+  sum((fitted - actual)^2)
+}
+
+# RMSE se ajusta mejor si es más bajo
+rmse <- function(fitted, actual){ 
+  sqrt(mean((fitted - actual)^2))
+}
+```
+
+Create the linear regression models:  
+
+```{r create_lm}
+# By center
+simple_model_mean_center <- lm(Mean.original ~ Center, data = dd.variables)
+
+# By minimum
+simple_model_mean_min <- lm(Mean.original ~ Minimum.original, data = dd.variables)
+
+# By minimum
+simple_model_mean_max <- lm(Mean.original ~ Maximum.original, data = dd.variables)
+
+# By center and minimum
+model_mean_center_min <- lm(Mean.original ~ Minimum.original + Center, data = dd.variables)
+
+# Multi
+model_mean_multi <- lm(Mean.original ~ Minimum.original + Center + Sex + Age + Cough, data = dd.variables)
+```
+
+Asses all three models:  
+
+```{r final_model}
+# RSS
+rss(fitted(model_mean_multi), dd.variables$Mean.original)
+rss(fitted(model_mean_center_min), dd.variables$Mean.original)
+rss(fitted(simple_model_mean_center), dd.variables$Mean.original)
+rss(fitted(simple_model_mean_min), dd.variables$Mean.original)
+rss(fitted(simple_model_mean_max), dd.variables$Mean.original)
+
+# RMSE
+rmse(fitted(model_mean_multi), dd.variables$Mean.original)
+rmse(fitted(model_mean_center_min), dd.variables$Mean.original)
+rmse(fitted(simple_model_mean_center), dd.variables$Mean.original)
+rmse(fitted(simple_model_mean_min), dd.variables$Mean.original)
+rmse(fitted(simple_model_mean_max), dd.variables$Mean.original)
+```
+
+See the difference between addition and interaction of covariates:  
+
+```{r plot_adjust_interaction}
+# By center and minimum when interacting
+model_mean_center_min_int <- lm(Mean.original ~ Minimum.original * Center, data = dd.variables)
+model_variance_center_min_int <- lm(Variance.original ~ Minimum.original * Center, data = dd.variables)
+
+# By center and minimum when interacting + multi
+multi_model_mean_center_min_int <- lm(Mean.original ~ Age + Sex + Country + Minimum.original * Center, data = dd.variables)
+multi_model_variance_center_min_int <- lm(Variance.original ~ Age + Sex + Country + Minimum.original * Center, data = dd.variables)
+
+# Store residuals of simple interaction model to make plots
+Results1 <- data.frame(row.names = rownames(dd.variables), Mean = residuals(model_mean_center_min_int), Variance = residuals(model_variance_center_min_int))
+
+# Store residuals of covariates + interaction model to make plots
+Results2 <- data.frame(row.names = rownames(dd.variables), Mean = residuals(multi_model_mean_center_min_int), Variance = residuals(multi_model_variance_center_min_int))
+
+# Set labels only for patients highly variable
+set.label1 <- ifelse(Results1[,"Mean"] > 1.5 | Results1[,"Variance"] > 2, rownames(Results1), "")
+set.label2 <- ifelse(Results2[,"Mean"] > 1.5 | Results2[,"Variance"] > 2, rownames(Results2), "")
+
+# Plot results
+qplot(Results1[,"Mean"], Results1[,"Variance"], colour = dd.variables$GOLDCD, xlab = "Mean", ylab = "Variance", main = "Simple interaction between center and minimum") + 
+   labs(colour = 'GOLDCD') + geom_text_repel(aes(label = set.label1))
+qplot(Results2[,"Mean"], Results2[,"Variance"], colour = dd.variables$GOLDCD, xlab = "Mean", ylab = "Variance", main = "Interaction between center and minimum + covariates") + 
+   labs(colour = 'GOLDCD') + geom_text_repel(aes(label = set.label2))
+```  
+
+
+```{r final_model_interaction}
+# RSS
+rss(fitted(model_mean_center_min_int), dd.variables$Mean.original)
+rss(fitted(multi_model_mean_center_min_int), dd.variables$Mean.original)
+
+# RMSE
+rmse(fitted(model_mean_center_min_int), dd.variables$Mean.original)
+rmse(fitted(multi_model_mean_center_min_int), dd.variables$Mean.original)
+```
+
+## Conclusion  
+`Minimum pixel value` adjust data better than `Center` (RSS equal to 110.5897 and 141.3399 respectively), but when both are used as covariates the model fits better (RSS equal to 58.41367). When using multivariate model (adding `Age`, `Sex`, `Country`, `Cough`), the model is slightly improved (RSS equal to 57.40919). In addition, `maximum pixel value` does not fit the model well and it might be possible due to the presence of several outliers (RSS equal to 1130.321).  
+
+Nevertheless, the best improvement is when `Center` and `minimum` interact with each other (RSS equal to 40.12806). Adding more covariates to the previous interaction also improves slightly this model (RSS equal to 39.84061).  
+
+## Export adjusted data using the best model  
+
+```{r residuals_ok}
+# Data frame with variables of interest
+variables <- cbind(Center = colData(rdr_filt_original)$CENTREID, Minimum = table_scaled.T$Minimum.original)
+# Empty data frame to store residuals once the model is adjusted
+mat_res <- DataFrame(row.names = patients_original)
+
+# Store residuals iterating by columns (by features)
+mat_res <- apply(table_scaled.T, 2, function(x) {
+  ex <- data.frame(feature=x)
+  ex <- cbind(ex,variables)
+  residuals(lm(feature ~ Minimum * Center,data=ex,na.action=na.exclude))
+})
+```
+
+Before storing the adjusted data back to the `rdr` object, prepare the table for having the same format than the original data:  
+
+```{r prepare_table_assay}
+# Restore original col names (remember that some changes were previously made)
+colnames(mat_res) <- features_original
+
+# Transpose the dataframe to place features as rows and individuals as columns
+assay_adjusted_original <- as.data.frame(t(mat_res))
+```
+
+Filter from the data set highly variable individuals (the most dispersed):  
+
+```{r filter_variable_ind}
+variable.ind <- intersect(set.label1, colnames(assay_adjusted_original))
+
+# Filter radiomic assay and rdr object
+assay_adjusted_original[,!(colnames(assay_adjusted_original) %in% variable.ind)]
+rdr_filt_original <- rdr_filt_original[,!(colnames(rdr_filt_original) %in% variable.ind)]
+
+# Check individuals have the same order in both objects ordered
+identical(colnames(rdr_filt_original), colnames(assay_adjusted_original))
+
+# Fix colnames order
+ordered <- intersect(colnames(rdr_filt_original), colnames(assay_adjusted_original))
+rdr_filt_original <- rdr_filt_original[,ordered]
+assay_adjusted_original <- assay_adjusted_original[,ordered]
+identical(colnames(rdr_filt_original), colnames(assay_adjusted_original))
+
+# Check rdr
+rdr_filt_original
+```
+
+Finally, add a new `assay` to `rdr` object and save it:  
+
+```{r add_assay_original}
+# This code allows adding assays to rdr object
+assays(rdr_filt_original)$adjusted_min_int_center <- assay_adjusted_original
+```
+
+Save the object:  
+```{r save_data_adjusted}
+save(rdr_filt_original, file = "/Users/carlacasanovasuarez/Documents/Master Bioinformatics UAB/Prácticas Radiomics/Radiomic features/Results_rfeatures/radar_L1_Norm_scaled_adjusted_min_int_center.rda")
+```
+
+
+
+
+
+
+
+

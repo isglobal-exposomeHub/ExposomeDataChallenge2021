@@ -1,0 +1,230 @@
+---
+title: "Preparation of RadAR object"
+author: "Carla Casanova"
+date: "5/4/2022"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Explore data in the rdr object  
+
+```{r import_RadAR}
+library(RadAR)
+library(dplyr)
+```
+
+First we're going to explore the first `rdr` object created containing data for all the patients without filtering. In this case, `colnames` are equal to the name of the `tsv` for a given patient. In total, there are 2581:   
+
+```{r load_rdr}
+load("/Users/carla/Documents/Master Bioinformatics UAB/Prácticas Radiomics/Radiomic features/Results_rfeatures/results/radar_object_Norm.rda")
+
+rdr
+```
+
+```{r check_colData}
+names(colData(rdr))
+```
+
+```{r check_rowData}
+ names(rowData(rdr))
+```
+
+```{r check_image_types}
+# print available image types
+print_image_type(rdr = rdr)
+```
+
+Some `rdr` filtered by feature type or image can be created. The original picture is the only image type containing all the radiomics features (shape features are not computable from image transformations). So, for performing some analysis such as **correlation matrix** we'll be using the features computed for the original image.  
+
+```{r filtering_image_type}
+## filter by image types
+rdr_filt_original <- filter_by_image_type(rdr = rdr, image_type = c("original"))
+ 
+rdr_filt_original
+```
+
+```{r check_feature_types}
+# print available feature types
+ print_feature_type(rdr = rdr)
+```
+
+```{r filtering_features}
+rdr_filt_FO <- filter_by_feature_type(rdr = rdr,
+                                    feature_type = c("first_order_shape",
+                                                     "first_order_statistics"))
+rdr_filt_FO
+```
+
+The following table shows that the original image type has the highest number of radiomic features:  
+
+```{r table_features_per_image}
+## how many features per image types?
+table(rowData(rdr)$image_type)
+```
+
+## Modify colData of the complete rdr object  
+
+So, let's take a look to the current IDs written in the `rdr` object as `colnames`:  
+
+```{r check_mask_id}
+head(colData(rdr)$mask_id)
+```
+
+We're going to prepare a data frame gathering the correct format for the patient ID and the time where the measurements were made:  
+
+```{r coldata_mod}
+# Storing information for colData in a data frame
+a <- colnames(rdr)
+id <- substr(unlist(lapply(sapply(a, strsplit, "_"), "[[", 1)), 2, 12)
+time <- unlist(lapply(sapply(a, strsplit, "_"), "[[", 4))
+dd <- data.frame(filename=a, id=id, time=time)
+```
+
+The `mask id` is settled equal to the `id` created in the previous data frame:  
+
+```{r add_columns}
+# Change mask id 
+colData(rdr)$mask_id <- dd$id
+
+# Add time
+colData(rdr) <- cbind(colData(rdr), time)
+```
+
+Now, only the patients measured in L1 are selected for creating a new `rdr_L1` object:  
+
+```{r changed_colData}
+# Check the new colData
+colData(rdr)
+
+# Subset patients of L1
+rdr_L1 <- rdr[,rdr$time == "L1"]
+```
+
+Once `rlr_L1` has been created, `colnames` should be changed to `mask_id` in order to see properly the IDs also in the radiomic table stored as `assay`.  
+
+```{r change_ids_assay}
+# Change the column names to be equal to the mask id
+colnames(rdr_L1) <- rdr_L1$mask_id
+```
+
+```{r save_rdr_L1}
+# Save an rdr object for L1 patients
+save(rdr_L1, file = "/Users/carla/Documents/Master Bioinformatics UAB/Prácticas Radiomics/Radiomic features/Results_rfeatures/results/radar_object_Norm_L1.rda")
+```
+
+## Creating RadAR object for patients with transcriptomic data  
+
+```{r rdr_transcrip}
+rdr_trans <- import_pyradiomics(dir = "/Users/carla/Documents/Master Bioinformatics UAB/Prácticas Radiomics/Radiomic features/Results_rfeatures/changed_patients_with_transcriptomics_rf/")
+
+rdr_trans
+```
+
+```{r coldata_mod_trans}
+# Storing information for colData in a data frame
+a <- colnames(rdr_trans)
+id <- substr(unlist(lapply(sapply(a, strsplit, "_"), "[[", 1)), 2, 12)
+time <- unlist(lapply(sapply(a, strsplit, "_"), "[[", 4))
+dd <- data.frame(filename=a, id=id, time=time)
+```
+
+
+```{r add_columns_trans}
+# Change mask id 
+colData(rdr_trans)$mask_id <- dd$id
+
+# Add time
+colData(rdr_trans) <- cbind(colData(rdr_trans), time)
+
+# Change the column names to be equal to the mask id
+colnames(rdr_trans) <- rdr_trans$mask_id
+
+# Subset patients of L1
+rdr_trans_L1 <- rdr_trans[,rdr_trans$time == "L1"]
+
+# Check the new colData
+colData(rdr_trans_L1)
+```
+
+```{r save_rdr_trans_L1}
+# Save an rdr object for L1 patients with transcriptomic data
+save(rdr_trans_L1, file = "/Users/carla/Documents/Master Bioinformatics UAB/Prácticas Radiomics/Radiomic features/Results_rfeatures/radar_object_Norm_L1_trans.rda")
+```
+
+## Adding clinical data to RadAR object  
+
+```{r load_rdr_L1}
+load("/Users/carla/Documents/Master Bioinformatics UAB/Prácticas Radiomics/Radiomic features/Results_rfeatures/results/radar_object_Norm_L1.rda")
+
+rdr_L1
+
+tableColData <- as.data.frame(colData(rdr_L1))
+```
+
+The **clinical** data stored in a text file is loaded:   
+
+```{r read_clinical}
+clinical <- read.csv("/Users/carla/Downloads/eclipse_clinical.txt", sep = "\t")
+
+clinical
+```
+
+```{r explore_clinical}
+head(rownames(clinical))
+```
+
+The `rownames` should be changed by using the following ID format: CENTERID + 00 + SUBJID (the last one should have 4 digits, if not the is completed with 0). This ID has been already created in the second column:  
+
+```{r CT_id}
+# Change ID data type to character
+clinical_change <- transform(clinical, id = as.character(id))
+rownames(clinical_change) <- clinical_change$id
+
+head(clinical_change)
+```
+
+Now, let's check that the clinical data and the `rdr_L1` have the same patients. Otherwise, we need to know which patients match between both objects:  
+
+```{r check_IDs_clinical}
+# Check IDs that are present in both objects
+identical(colnames(rdr_trans_L1), rownames(clinical_change))
+
+# Filter clinical data with patients that matched in both objects
+ids_equal <- intersect(colnames(rdr_L1), rownames(clinical_change))
+clinical_filtered <- clinical_change[ids_equal,]
+```
+
+For checking that non-matching patients are not from L1 time, we need to go back to `rdr` object (it has patients for L1, L2 and L3):  
+
+```{r check_no_equal}
+# Check non-matching patients 
+clinical_no_equal <- subset(clinical_change, !(rownames(clinical_change) %in% ids_equal))
+
+# First use the same col names in both objects for comparing
+colnames(rdr) <- rdr$mask_id
+
+# Check the time of each of the IDs that did not match between clinical and rdr_L1
+# Subset original data with patients of different measures (L1, L2, L3)
+nonE <- intersect(rownames(clinical_no_equal), colnames(rdr))
+checking <- rdr[,nonE]
+table(checking$time)
+```
+
+Finally, overwrite the `rdr_L1` object for the patients with clinical data available:  
+
+```{r add_clinical_rdr_L1}
+# Subset rdr_L1 by patients with available clinical data
+#rdr_L1 <- rdr_L1[,ids_equal]
+
+colData(rdr_L1) <- cbind(colData(rdr_trans_L1), clinical_filtered)
+
+rdr_trans_L1
+```
+
+```{r save_rdr_clinical}
+save(rdr_L1, file = "/Users/carla/Documents/Master Bioinformatics UAB/Prácticas Radiomics/Radiomic features/Results_rfeatures/results/radar_object_Norm_L1.rda")
+```
+
