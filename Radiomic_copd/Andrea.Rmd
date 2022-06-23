@@ -46,7 +46,7 @@ knitr::opts_chunk$set(echo = TRUE)
 
     7.3. Canonical correlation analysis (CCA)
 
-    7.4 TRTGRP prediction (COPD vs Non COPD)
+    7.4 COPD vs controls classification
 
     7.5 Classification COPD types
 
@@ -215,8 +215,7 @@ first_order <- RIA:::list_to_df(data$stat_fo$orig) # list of first order statist
 name_characteristics <- rownames(first_order) # names of the first order statistics
 ```
 ```{r, message=FALSE}
-library(rmarkdown)
-paged_table(first_order)
+print(as_tibble(first_order))
 ```
 
 With RIA we can also compute the <u>Gray level co-occurrence matrix (GLCM)</u> calculations and statistics. GLCMs are second-order statistics.
@@ -263,13 +262,12 @@ for (i in first_image:last_image) { # for loop through all the images
 ```
 
 Finally, we combine all the results into a data.frame called 'results'.
-```{r, layout="l-body-outset"}
-library(rmarkdown)
+```{r}
 results <- do.call(cbind.data.frame, res)
 colnames(results) <- seq(1, last_image-first_image+1) 
 rownames(results) <- name_characteristics
 #results:  results in a data.frame
-paged_table(results, options = list(rows.print = 10, cols.print = 5))
+print(as_tibble(results))
 ```
 
 
@@ -1048,8 +1046,7 @@ results <- RIA:::list_to_df(images$stat_fo$orig)
 name_characteristics <- rownames(results)
 ```
 ```{r, message=FALSE}
-library(rmarkdown)
-paged_table(results)
+print(as_tibble(results))
 ```
 
 
@@ -1074,7 +1071,6 @@ Now we compute the radiomic features.
 
 ```{r, message=FALSE, warnings = FALSE, results = FALSE, eval = FALSE}
 library(RIA)
-library(rmarkdown)
 
 res <- c()
 
@@ -1092,16 +1088,14 @@ for(patient in 1:length(images_folder_names)){
 results <- do.call(cbind.data.frame, res)
 colnames(results) <- seq(1, length(images_folder_names))
 rownames(results) <- name_characteristics
-paged_table(results)
-
+print(as_tibble(results))
 ```
 
 ```{r, message=FALSE, warnings = FALSE, eval = FALSE}
 results <- do.call(cbind.data.frame, res)
 colnames(results) <- seq(1, length(images_folder_names))
 rownames(results) <- name_characteristics
-paged_table(results)
-
+print(as_tibble(results))
 ```
 
 
