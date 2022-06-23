@@ -1,4 +1,4 @@
-# NOTE for publications using these data
+# NOTE for publications using data from this challenge
 
 Overall, users of data are strongly encouraged to publish their results in peer-reviewed journals and to present research findings at scientific meetings, etc. Investigators planning to conduct analyses similar to those described at https://www.projecthelix.eu/ may contact Consortium members at helixdata@isglobal.org  to discuss collaborations, if so desired. The raw data supporting the current study are available on request subject to ethical and legislative review, see details here: https://www.projecthelix.eu/index.php/es/data-inventory 
 These data may also be used for educational purposes.
