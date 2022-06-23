@@ -1,4 +1,10 @@
-**NOTE for selected talks**: Read [this file](https://github.com/isglobal-exposomeHub/ExposomeDataChallenge2021/blob/main/R_Code_Presentations/README.md) to see how to upload your R code (or the code used in any other language: Python, Matlab, ...).  
+# NOTE for publications using these data
+
+Overall, users of data are strongly encouraged to publish their results in peer-reviewed journals and to present research findings at scientific meetings, etc. Investigators planning to conduct analyses similar to those described at https://www.projecthelix.eu/ may contact Consortium members at helixdata@isglobal.org  to discuss collaborations, if so desired. The raw data supporting the current study are available on request subject to ethical and legislative review, see details here: https://www.projecthelix.eu/index.php/es/data-inventory 
+These data may also be used for educational purposes.
+
+The following text should be added to any publications based on this data:
+This data were created as part of the ISGlobal Exposome data challenge 2021, presented in this publication (preprint: https://arxiv.org/abs/2202.01680 - under review in Env. Int.). The HELIX study [Vrijheid, Slama, et al. EHP 2014; Maitre et al. 2018 BMJ Open] represents a collaborative project across six established and ongoing longitudinal population-based birth cohort studies in six European countries (France, Greece, Lithuania, Norway, Spain, and the United Kingdom).  The research leading to these results has received funding from the European Community’s Seventh Framework Programme (FP7/2007-2013) under grant agreement no 308333 – the HELIX project and the H2020-EU.3.1.2. - Preventing Disease Programme under grant agreement no 874583 (ATHLETE project). The data used for the analyses described in this manuscript were obtained from: Figshare https://figshare.com/account/home#/projects/98813 (project number 98813 accesed on MM/DD/YYYY) and github https://github.com/isglobal-exposomeHub/ExposomeDataChallenge2021/.
 
 # Exposome Data Challenge 2021
 
