@@ -1,5 +1,5 @@
 ---
-title: "Adjust data: assesing linear models"
+title: "Adjust radiomic features: asses best linear model"
 author: "Carla Casanova"
 output: pdf_document
 date: '2022-06-21'
@@ -16,6 +16,8 @@ library(RadAR)
 library(dplyr)
 library(ggplot2)
 library(ggrepel)
+library(RColorBrewer)
+library(gridExtra)
 ```
 
 ## Load data  
@@ -27,7 +29,7 @@ load("/Users/carlacasanovasuarez/Documents/Master Bioinformatics UAB/Prácticas 
 rdr_L1
 ```  
 
-Filter by image type, only radiomic features from original images will be used:  
+Filter by image type, only radiomic features from **original** images will be used:  
 
 ```{r filtering_image_type}
 ## filter by image types
@@ -87,7 +89,51 @@ dd.variables = dd.variables[complete.cases(dd.variables), ]
 dim(dd.variables)
 ```
 
+
+## Check data: batch effect and raw data  
+The following plots clearly show **batch effect** of image data, since three different groups of individuals can be spotted. First, select a palette with the highest number of colors and discrete colors to avoid gradients:  
+
+```{r select_palette}
+# Display palettes
+#display.brewer.all()
+
+# Select discrete palette
+mypalette <- brewer.pal(11,"Set3")
+
+# Extend colors by number of levels in Center variable
+morecols <- colorRampPalette(mypalette)
+n_color <- length(levels(dd.variables$Center))
+```
+
+The following plot represents values for `mean` and `variance` coloured by `center ID`, since it is one of the most common variables causing batch effect in radiomics field. Three groups of individuals are clearly differentiated, of which different center composition is also spotted:  
+
+```{r plot_raw_mean}
+qplot(dd.variables$Mean.original, dd.variables$Variance.original, colour = dd.variables$Center, xlab = "Mean", ylab = "Variance", main= "Raw mean and variance") + 
+   labs(colour = 'Center ID') + scale_colour_manual(values = morecols(n_color))
+```
+Clearly, `center ID` is affecting radiomic features' values between patients. Let's check data related with the range of pixel values of the images such as `minimum pixel value`. In addition, these values are plotted alongside `center ID` in order to check how much is affecting inter-center variability:  
+
+```{r minimum_hist}
+ggplot(data = dd.variables) +
+  geom_histogram(aes(x = Minimum.original, fill = Center), binwidth = 0.25) +
+  labs(title ="Minimum pixel value by center ID", x= "Minimum pixel value scaled", y = "Counts", fill = "Center ID") + theme_bw() + scale_fill_manual(values = morecols(n_color))
+```
+
+Again, patients displayed different ranges since `minimum pixel values` are different, moreover they are clearly affected by `center ID`. However, see that distribution of `minimum pixel values` is also depending on center:  
+
+```{r plot_minimum_center, fig.align='center', fig.height=8}
+#pdf("minimum distribution by center (raw).pdf")
+
+ggplot(data = dd.variables) +
+  geom_histogram(aes(x = Minimum.original, fill = Center), binwidth = 0.25) +
+  labs(title ="Minimum pixel value by center ID", x= "Minimum pixel value scaled", y = "Counts", fill = "Center ID") + facet_wrap(.~Center,ncol=6) + theme_bw() + scale_fill_manual(values = morecols(n_color))
+
+#dev.off()
+```
+
 ## Check for outliers in variables of interest  
+
+Regarding ranges of pixel values of CT images, let's check if there are outlier individuals that can affect the analysis:   
 
 ```{r outlier_function}
 # Plotting boxplot
@@ -108,6 +154,8 @@ table_scaled.T %>%
     geom_text(aes(x=factor(0), label = outlier), na.rm = TRUE, hjust = +0.7) 
 ```
 
+Check if there are outliers and their patient ID for `maximum`: 
+
 ```{r outlier_max}
 table_scaled.T %>%
   mutate(outlier = ifelse(is_outlier(Maximum.original), rownames(table_scaled.T), as.numeric(NA))) %>%
@@ -116,8 +164,17 @@ table_scaled.T %>%
     geom_label_repel(aes(x=factor(0), label = outlier), na.rm = TRUE, max.overlaps = 30) 
 ```
 
-## Adjust  
+Check if there are outliers and their patient ID for `mean`. The `minimum` and `maximum` are vealues representing only one pixel in each case, hence to check if ranges are normal we also need to check the value for most part of the pixels:   
 
+```{r outlier_mean}
+table_scaled.T %>%
+  mutate(outlier = ifelse(is_outlier(Mean.original), rownames(table_scaled.T), as.numeric(NA))) %>%
+  ggplot(., aes(y = Mean.original)) +
+    geom_boxplot() +
+    geom_label_repel(aes(x=factor(0), label = outlier), na.rm = TRUE, max.overlaps = 30) 
+```
+
+## Adjust  
 Adjust by `minimum pixel value`:  
 
 ```{r adjust_function_min}
@@ -175,7 +232,6 @@ qplot(clinical_features_multi_adj[,"Mean.original"], clinical_features_multi_adj
 
 
 ## Asses best adjustment  
-
 Prepare functions to asses linear models: `RSS` and `RMSE`.  
 
 ```{r asses_model_functions}
@@ -271,7 +327,9 @@ rmse(fitted(multi_model_mean_center_min_int), dd.variables$Mean.original)
 
 Nevertheless, the best improvement is when `Center` and `minimum` interact with each other (RSS equal to 40.12806). Adding more covariates to the previous interaction also improves slightly this model (RSS equal to 39.84061).  
 
-## Export adjusted data using the best model  
+## Use the best model to adjust radiomic features  
+
+As previously seen, the best model is `minimum` and `center ID` interaction with covariates. Nevertheless, since some covariates have `NaN` and the model is also a good fit without using them, only `minimum` and `center ID` interaction has been considered:  
 
 ```{r residuals_ok}
 # Data frame with variables of interest
@@ -287,6 +345,41 @@ mat_res <- apply(table_scaled.T, 2, function(x) {
 })
 ```
 
+Compare data distribution of raw and adjusted features:  
+
+```{r mean_dist}
+# Raw Mean
+plt1 <- ggplot(data = table_scaled.T) +
+  geom_histogram(aes(x = Mean.original), binwidth = 0.25) +
+  labs(title ="Distribution of raw mean", x= "Raw mean of pixel values scaled", y = "Counts") + theme_bw() 
+
+# Adjusted Mean
+plt2 <- ggplot(data = as.data.frame(mat_res)) +
+  geom_histogram(aes(x = Mean.original), binwidth = 0.25) +
+  labs(title ="Distribution of adjusted mean", x= "Adjusted mean of pixel values", y = "Counts") + theme_bw()
+
+grid.arrange(plt1, plt2, ncol=2)
+```
+
+Check normally distributed features by using **Shapiro test**:  
+
+```{r saphiro_test}
+# Apply shapiro test iterating by rows (radiomic features)
+results.adj <- apply(mat_res, 2, shapiro.test)
+results.raw <- apply(table_scaled.T, 2, shapiro.test)
+
+# Check which features are normally distributed
+normal.adj <- sapply(results.adj, function(x) x$p.value > 0.05)
+normal.raw <- sapply(results.raw, function(x) x$p.value > 0.05)
+
+# Check how many variables are normally distributed
+table(normal.adj)
+table(normal.raw)
+```
+
+As can be spotted, radiomic features are not normally distributed neither in raw data nor in adjusted data. Nevertheless, histogram of mean pixel values was improved even though there are some individuals highly dispersed. Thefore, data has been transformed from **bimodal distribution** to **right skewed**, nevertheless highly variable individuals can be removed for the analysis.  
+
+## Exporting the best model to rdr object  
 Before storing the adjusted data back to the `rdr` object, prepare the table for having the same format than the original data:  
 
 ```{r prepare_table_assay}
@@ -297,22 +390,16 @@ colnames(mat_res) <- features_original
 assay_adjusted_original <- as.data.frame(t(mat_res))
 ```
 
-Filter from the data set highly variable individuals (the most dispersed):  
+Filter from the data set **highly variable individuals** (the most dispersed):  
 
 ```{r filter_variable_ind}
 variable.ind <- intersect(set.label1, colnames(assay_adjusted_original))
 
 # Filter radiomic assay and rdr object
-assay_adjusted_original[,!(colnames(assay_adjusted_original) %in% variable.ind)]
+assay_adjusted_original <- assay_adjusted_original[,!(colnames(assay_adjusted_original) %in% variable.ind)]
 rdr_filt_original <- rdr_filt_original[,!(colnames(rdr_filt_original) %in% variable.ind)]
 
 # Check individuals have the same order in both objects ordered
-identical(colnames(rdr_filt_original), colnames(assay_adjusted_original))
-
-# Fix colnames order
-ordered <- intersect(colnames(rdr_filt_original), colnames(assay_adjusted_original))
-rdr_filt_original <- rdr_filt_original[,ordered]
-assay_adjusted_original <- assay_adjusted_original[,ordered]
 identical(colnames(rdr_filt_original), colnames(assay_adjusted_original))
 
 # Check rdr
@@ -327,7 +414,7 @@ assays(rdr_filt_original)$adjusted_min_int_center <- assay_adjusted_original
 ```
 
 Save the object:  
-```{r save_data_adjusted}
+```{r save_data_adjusted, eval=FALSE}
 save(rdr_filt_original, file = "/Users/carlacasanovasuarez/Documents/Master Bioinformatics UAB/Prácticas Radiomics/Radiomic features/Results_rfeatures/radar_L1_Norm_scaled_adjusted_min_int_center.rda")
 ```
 
